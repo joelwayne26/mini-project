@@ -2,6 +2,9 @@
  * TrendLens AI v6.0 — Local Caption Generator
  * Template-based NLG with intelligent composition — NO external LLM APIs.
  * Generates creative, contextually-aware captions for Ugandan food businesses.
+ *
+ * v2: Fixes illogical trend injection and respects visual analysis
+ * for CTA/price detection from poster images.
  */
 
 import { CaptionFeatures } from './types';
@@ -40,11 +43,11 @@ const PATTERNS: Record<string, CaptionPattern> = {
       'WhatsApp 0700 XXX XXX to place your order',
       'Link in bio to customize your cake',
       'Order now and make your celebration unforgettable',
-      'Limited slots available — book yours now!',
+      'Limited slots available, book yours now!',
     ],
     hashtagSets: {
       core: ['#CakeKampala', '#UgandanBakery', '#CustomCakesUG', '#CakeLover'],
-      type: ['#WeddingCake', '#BirthdayCake', '#Cupcakes', '# FondantCake'],
+      type: ['#WeddingCake', '#BirthdayCake', '#Cupcakes', '#FondantCake'],
       local: ['#KampalaFood', '#UgandaFood', '#KampalaEats', '#UGFoodie'],
     },
     emojiSets: ['🎂🍰🧁', '✨🎉💕', '🤤😋🔥', '💝🎂✨'],
@@ -94,7 +97,7 @@ const PATTERNS: Record<string, CaptionPattern> = {
       'Perfect for family dining',
     ],
     ctas: [
-      'Reserve your table — DM or call!',
+      'Reserve your table, DM or call!',
       'WhatsApp 0700 XXX XXX for delivery',
       'Tag someone who needs to try this',
       'Link in bio for our full menu',
@@ -125,7 +128,7 @@ const PATTERNS: Record<string, CaptionPattern> = {
       'DM to order!',
       'WhatsApp us at 0700 XXX XXX',
       'Link in bio for details',
-      'Limited stock — order now!',
+      'Limited stock, order now!',
     ],
     hashtagSets: {
       core: ['#KampalaBusiness', '#SupportLocalUG', '#Uganda', '#MadeInUG'],
@@ -135,6 +138,58 @@ const PATTERNS: Record<string, CaptionPattern> = {
     emojiSets: ['✨🔥💯', '💪🇺🇬❤️', '🎯⭐💫', '🚀💯❤️'],
   },
 };
+
+// ─── Trend Keyword Filtering ───────────────────────────────────────────────
+
+/**
+ * Filter out irrelevant, non-food-related, or low-quality trend keywords.
+ * Prevents injecting news headlines or unrelated topics into food captions.
+ */
+function isRelevantFoodTrend(keyword: string): boolean {
+  const lower = keyword.toLowerCase().trim();
+
+  // Too long (likely a news headline, not a trend)
+  if (lower.length > 40) return false;
+
+  // Contains news headline patterns
+  const headlinePatterns = [
+    /^(the\s+\d+|top\s+\d+|best\s+\d+|how\s+to|why\s+|what\s+|when\s+|who\s+|where\s+)/i,
+    /(rising women|daily monitor|new vision|observer|daily monito)/i,
+    /\.{3}/,  // Ellipsis = headline snippet
+    /-\s*(daily|monitor|vision|observer|reporter|news)/i,  // News source attribution
+  ];
+  for (const pattern of headlinePatterns) {
+    if (pattern.test(lower)) return false;
+  }
+
+  // Must contain at least one food/business-related word
+  const foodWords = [
+    'food', 'cake', 'bread', 'bakery', 'restaurant', 'kampala', 'uganda', 'ugx',
+    'lunch', 'dinner', 'breakfast', 'delivery', 'order', 'fresh', 'recipe',
+    'chicken', 'beef', 'fish', 'rice', 'pizza', 'burger', 'coffee', 'tea',
+    'pastry', 'dessert', 'sweet', 'spicy', 'grill', 'rolex', 'matooke',
+    'luwombo', 'pilau', 'chapati', 'mandazi', 'rolex', 'organic', 'healthy',
+    'meal', 'dish', 'cook', 'chef', 'menu', 'taste', 'delicious', 'yummy',
+    'wedding', 'birthday', 'celebration', 'custom', 'artisan', 'homemade',
+    'local', 'business', 'market', 'deal', 'offer', 'price', 'discount',
+    'whatsapp', 'dm', 'shop', 'buy', 'sell', 'brand', 'quality',
+  ];
+  const hasFoodWord = foodWords.some(w => lower.includes(w));
+  if (!hasFoodWord) return false;
+
+  return true;
+}
+
+/**
+ * Clean and format trend keywords for caption injection.
+ * Only injects keywords that are relevant food trends.
+ */
+function cleanTrendKeywords(keywords: string[]): string[] {
+  return keywords
+    .filter(isRelevantFoodTrend)
+    .map(kw => kw.trim())
+    .filter(kw => kw.length > 3 && kw.length <= 35);
+}
 
 // ─── Caption Generator ─────────────────────────────────────────────────────
 
@@ -157,12 +212,32 @@ function detectItemFromCaption(caption: string, category: string): string {
   return category === 'general' ? 'product' : category === 'cake' ? 'cake' : category === 'bakery' ? 'bread' : 'dish';
 }
 
+/**
+ * Extended features that include visual analysis results.
+ * This allows the caption generator to know about CTA/price
+ * detected on the poster image, not just in the caption text.
+ */
+interface ExtendedCaptionFeatures extends CaptionFeatures {
+  /** CTA detected on the poster image (from visual analysis) */
+  visualCtaDetected?: boolean;
+  visualCtaText?: string;
+  /** Price detected on the poster image (from visual analysis) */
+  visualPriceDetected?: boolean;
+  visualPriceText?: string;
+}
+
 export function generateImprovedCaption(
   originalCaption: string,
   features: CaptionFeatures,
   category: string,
   trendKeywords: string[] = [],
   topHashtags: string[] = [],
+  visualAnalysis?: {
+    visualCtaDetected?: boolean;
+    visualCtaText?: string;
+    visualPriceDetected?: boolean;
+    visualPriceText?: string;
+  } | null,
 ): string {
   if (!originalCaption.trim()) {
     return generateCaptionFromScratch(category, trendKeywords, topHashtags);
@@ -172,6 +247,10 @@ export function generateImprovedCaption(
   const pattern = PATTERNS[category] || PATTERNS.general;
   const item = detectItemFromCaption(originalCaption, category);
   const parts: string[] = [];
+
+  // Determine effective CTA/price (combining caption + visual analysis)
+  const effectiveHasCta = features.hasCta || (visualAnalysis?.visualCtaDetected ?? false);
+  const effectiveHasPrice = features.hasPrice || (visualAnalysis?.visualPriceDetected ?? false);
 
   // 1. Keep and enhance the original opening (always preserve user's voice)
   const sentences = originalCaption.split(/[.!]/).filter(s => s.trim().length > 0);
@@ -193,10 +272,13 @@ export function generateImprovedCaption(
     }
   }
 
-  // 3. Price mention — only if missing and required
-  if (!features.hasPrice) {
+  // 3. Price mention — only if NOT already present (in caption OR on image)
+  if (!effectiveHasPrice) {
     const pricePhrases = ['Starting at UGX 50,000', 'Prices from UGX 30,000', 'Affordable luxury from UGX 25,000'];
     parts.push(pick(pricePhrases));
+  } else if (visualAnalysis?.visualPriceText && !features.hasPrice) {
+    // Price is on the image but not in caption — mention it in text too for better SEO
+    parts.push(`${visualAnalysis.visualPriceText}`);
   }
 
   // 4. Benefit — only if caption is short
@@ -204,14 +286,19 @@ export function generateImprovedCaption(
     parts.push(pick(pattern.benefits) + '.');
   }
 
-  // 5. Trend keyword injection — only if alignment is low
-  if (trendKeywords.length > 0 && features.trendAlignment.score < 0.2) {
-    parts.push(`Trending: ${trendKeywords.slice(0, 2).join(' & ')}`);
+  // 5. Trend keyword injection — ONLY relevant food trends, NEVER news headlines
+  const cleanKeywords = cleanTrendKeywords(trendKeywords);
+  if (cleanKeywords.length > 0 && features.trendAlignment.score < 0.2) {
+    // Use hashtag-style trend mention instead of raw text injection
+    parts.push(`Join the ${cleanKeywords[0]} trend!`);
   }
 
-  // 6. CTA — only if missing
-  if (!features.hasCta) {
+  // 6. CTA — only if NOT already present (in caption OR on image)
+  if (!effectiveHasCta) {
     parts.push(pick(pattern.ctas));
+  } else if (visualAnalysis?.visualCtaText && !features.hasCta) {
+    // CTA is on the image but not in caption — add it to text for accessibility
+    parts.push(visualAnalysis.visualCtaText);
   }
 
   // 7. Emojis — only if none present
@@ -269,9 +356,10 @@ function generateCaptionFromScratch(
   // Benefit
   parts.push(pick(pattern.benefits) + '.');
 
-  // Trend
-  if (trendKeywords.length > 0) {
-    parts.push(`Join the ${trendKeywords[0]} trend!`);
+  // Trend — only relevant food keywords
+  const cleanKeywords = cleanTrendKeywords(trendKeywords);
+  if (cleanKeywords.length > 0) {
+    parts.push(`Join the ${cleanKeywords[0]} trend!`);
   }
 
   // Price
@@ -315,25 +403,25 @@ export function generatePlatformVariants(
   const instagramReasons: string[] = [];
   if (features.hashtagCount >= 8) instagramReasons.push('strong hashtag count');
   else if (features.hashtagCount >= 5) instagramReasons.push('moderate hashtags (could use more)');
-  else instagramReasons.push('low hashtags — add more for reach');
+  else instagramReasons.push('low hashtags, add more for reach');
   if (features.hasCta) instagramReasons.push('clear CTA');
-  else instagramReasons.push('missing CTA — add one for conversions');
+  else instagramReasons.push('missing CTA, add one for conversions');
   if (features.hasPrice) instagramReasons.push('price shown');
-  else instagramReasons.push('no price — consider adding');
+  else instagramReasons.push('no price, consider adding');
   if (features.sentiment.polarity > 0.2) instagramReasons.push('positive tone');
   if (features.emojiCount >= 1) instagramReasons.push('engaging emojis');
 
   const twitterReasons: string[] = [];
   if (textOnly.length <= 200) twitterReasons.push('concise text fits well');
-  else twitterReasons.push('text is long — trimmed for 280 char limit');
+  else twitterReasons.push('text is long, trimmed for 280 char limit');
   if (features.hasCta) twitterReasons.push('CTA included');
   else twitterReasons.push('needs a strong CTA');
   if (features.sentiment.polarity > 0) twitterReasons.push('positive sentiment helps');
 
   const facebookReasons: string[] = [];
   if (features.wordCount > 80) facebookReasons.push('good storytelling length');
-  else if (features.wordCount > 40) facebookReasons.push('moderate length — could tell more story');
-  else facebookReasons.push('too brief — Facebook rewards longer stories');
+  else if (features.wordCount > 40) facebookReasons.push('moderate length, could tell more story');
+  else facebookReasons.push('too brief, Facebook rewards longer stories');
   if (features.hasCta) facebookReasons.push('CTA present');
   else facebookReasons.push('add a CTA for engagement');
   if (features.sentiment.polarity > 0.2) facebookReasons.push('emotional connection');
@@ -351,7 +439,7 @@ export function generatePlatformVariants(
       caption: `${textOnly.slice(0, 220)}... ${hashtags.slice(0, 3).join(' ')}`.trim().slice(0, 280),
       hashtags: hashtags.slice(0, 3),
       scorePrediction: Math.min(10, 5.5 + (features.hasCta ? 1.5 : 0) + (features.sentiment.polarity > 0 ? 0.5 : 0) + (textOnly.length <= 200 ? 0.5 : -0.3)),
-      reasoning: `Twitter: ${twitterReasons.join(', ')}. ${textOnly.length <= 200 ? 'Fits perfectly in 280 chars.' : 'Trimmed to fit — keep it punchy.'}`,
+      reasoning: `Twitter: ${twitterReasons.join(', ')}. ${textOnly.length <= 200 ? 'Fits perfectly in 280 chars.' : 'Trimmed to fit, keep it punchy.'}`,
     },
     {
       platform: 'facebook',

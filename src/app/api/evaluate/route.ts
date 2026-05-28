@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
       // RAG is non-critical
     }
 
-    // 7. Generate improved caption
+    // 7. Generate improved caption (with visual analysis so CTA/price on image is respected)
     const topHashtags = benchmarks.hashtagPerformance
       ? Object.keys(benchmarks.hashtagPerformance).slice(0, 5)
       : [];
@@ -192,6 +192,12 @@ export async function POST(request: NextRequest) {
       caption, captionFeatures, category,
       trendAlignment.matchedKeywords,
       topHashtags,
+      visualAnalysis ? {
+        visualCtaDetected: visualAnalysis.visualCtaDetected,
+        visualCtaText: visualAnalysis.visualCtaText,
+        visualPriceDetected: visualAnalysis.visualPriceDetected,
+        visualPriceText: visualAnalysis.visualPriceText,
+      } : null,
     );
 
     // 8. Generate platform variants
