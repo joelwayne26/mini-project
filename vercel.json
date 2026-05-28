@@ -3,11 +3,24 @@
   "buildCommand": "npm run build",
   "installCommand": "npm install",
   "outputDirectory": ".next",
-  "regions": ["iad1"],
+  "regions": [
+    "iad1"
+  ],
   "crons": [
     {
       "path": "/api/cron/refresh-trends",
       "schedule": "0 0 * * *"
     }
-  ]
+  ],
+  "experimentalServices": {
+    "frontend": {
+      "routePrefix": "/",
+      "framework": "nextjs"
+    },
+    "backend": {
+      "root": "backend",
+      "entrypoint": "main:app",
+      "routePrefix": "/_/backend"
+    }
+  }
 }
