@@ -173,49 +173,68 @@ export function generateImprovedCaption(
   const item = detectItemFromCaption(originalCaption, category);
   const parts: string[] = [];
 
-  // 1. Opening hook
-  const needsHook = originalCaption.length < 50 || !originalCaption.match(/^[A-Z]/);
-  if (needsHook) {
-    parts.push(pick(pattern.openings) + ' ' + pick(pattern.descriptions).replace('{item}', item) + '!');
+  // 1. Keep and enhance the original opening (always preserve user's voice)
+  const sentences = originalCaption.split(/[.!]/).filter(s => s.trim().length > 0);
+  if (sentences.length > 0) {
+    const firstSentence = sentences[0].trim();
+    // Capitalize first letter if needed
+    const enhanced = firstSentence.charAt(0).toUpperCase() + firstSentence.slice(1);
+    parts.push(enhanced + (firstSentence.endsWith('!') ? '' : '!'));
   } else {
-    // Polish the original opening
-    parts.push(originalCaption.split(/[.!]/)[0].trim());
+    parts.push(pick(pattern.openings) + ' ' + pick(pattern.descriptions).replace('{item}', item) + '!');
   }
 
-  // 2. Price mention
-  if (!features.hasPrice && rules.priceRequired) {
+  // 2. Add more from the original caption (preserve their message)
+  if (sentences.length > 1) {
+    // Add remaining original sentences, cleaned up
+    const rest = sentences.slice(1).map(s => s.trim()).filter(s => s.length > 5 && !s.match(/^#\w+$/));
+    if (rest.length > 0) {
+      parts.push(rest.join('. ') + '.');
+    }
+  }
+
+  // 3. Price mention — only if missing and required
+  if (!features.hasPrice) {
     const pricePhrases = ['Starting at UGX 50,000', 'Prices from UGX 30,000', 'Affordable luxury from UGX 25,000'];
     parts.push(pick(pricePhrases));
   }
 
-  // 3. Benefit / value proposition
-  if (features.wordCount < 60) {
-    parts.push(pick(pattern.benefits));
+  // 4. Benefit — only if caption is short
+  if (features.wordCount < 40) {
+    parts.push(pick(pattern.benefits) + '.');
   }
 
-  // 4. Trend keyword injection
-  if (trendKeywords.length > 0 && features.trendAlignment.score < 0.3) {
-    const trendingPhrase = `Trending now: ${trendKeywords.slice(0, 2).join(' & ')}`;
-    parts.push(trendingPhrase);
+  // 5. Trend keyword injection — only if alignment is low
+  if (trendKeywords.length > 0 && features.trendAlignment.score < 0.2) {
+    parts.push(`Trending: ${trendKeywords.slice(0, 2).join(' & ')}`);
   }
 
-  // 5. CTA
+  // 6. CTA — only if missing
   if (!features.hasCta) {
     parts.push(pick(pattern.ctas));
   }
 
-  // 6. Emojis
+  // 7. Emojis — only if none present
   const hasEmojis = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}]/u.test(originalCaption);
   if (!hasEmojis) {
     parts.push(pick(pattern.emojiSets));
   }
 
-  // 7. Hashtags
+  // 8. Hashtags — merge original + recommended
   const existingHashtags = (originalCaption.match(/#\w+/g) || []).map(h => h.toLowerCase());
   const neededCount = Math.max(0, rules.idealHashtags - existingHashtags.length);
   const newHashtags: string[] = [];
 
-  // Add category-specific hashtags
+  // Add top-performing hashtags from DB first (most relevant)
+  for (const tag of topHashtags.slice(0, 5)) {
+    if (newHashtags.length >= neededCount) break;
+    const formatted = tag.startsWith('#') ? tag : `#${tag}`;
+    if (!existingHashtags.includes(formatted.toLowerCase()) && !newHashtags.includes(formatted)) {
+      newHashtags.push(formatted);
+    }
+  }
+
+  // Fill remaining with category-specific hashtags
   for (const [_, tags] of Object.entries(pattern.hashtagSets)) {
     for (const tag of tags) {
       if (newHashtags.length >= neededCount) break;
@@ -225,22 +244,9 @@ export function generateImprovedCaption(
     }
   }
 
-  // Add top-performing hashtags from DB
-  for (const tag of topHashtags.slice(0, 5)) {
-    if (newHashtags.length >= neededCount) break;
-    const formatted = tag.startsWith('#') ? tag : `#${tag}`;
-    if (!existingHashtags.includes(formatted.toLowerCase()) && !newHashtags.includes(formatted)) {
-      newHashtags.push(formatted);
-    }
-  }
-
-  if (newHashtags.length > 0) {
-    parts.push('\n\n' + newHashtags.join(' '));
-  }
-
-  // Preserve existing hashtags from original
-  if (existingHashtags.length > 0) {
-    parts.push(existingHashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' '));
+  const allHashtags = [...existingHashtags.map(h => h.startsWith('#') ? h : `#${h}`), ...newHashtags];
+  if (allHashtags.length > 0) {
+    parts.push('\n\n' + allHashtags.join(' '));
   }
 
   return parts.join(' ').replace(/\n{3,}/g, '\n\n').trim();
@@ -305,27 +311,54 @@ export function generatePlatformVariants(
   const hashtags = (baseCaption.match(/#\w+/g) || []);
   const textOnly = baseCaption.replace(/#\w+/g, '').replace(/\n{2,}/g, '\n').trim();
 
+  // Build dynamic reasoning based on actual features
+  const instagramReasons: string[] = [];
+  if (features.hashtagCount >= 8) instagramReasons.push('strong hashtag count');
+  else if (features.hashtagCount >= 5) instagramReasons.push('moderate hashtags (could use more)');
+  else instagramReasons.push('low hashtags — add more for reach');
+  if (features.hasCta) instagramReasons.push('clear CTA');
+  else instagramReasons.push('missing CTA — add one for conversions');
+  if (features.hasPrice) instagramReasons.push('price shown');
+  else instagramReasons.push('no price — consider adding');
+  if (features.sentiment.polarity > 0.2) instagramReasons.push('positive tone');
+  if (features.emojiCount >= 1) instagramReasons.push('engaging emojis');
+
+  const twitterReasons: string[] = [];
+  if (textOnly.length <= 200) twitterReasons.push('concise text fits well');
+  else twitterReasons.push('text is long — trimmed for 280 char limit');
+  if (features.hasCta) twitterReasons.push('CTA included');
+  else twitterReasons.push('needs a strong CTA');
+  if (features.sentiment.polarity > 0) twitterReasons.push('positive sentiment helps');
+
+  const facebookReasons: string[] = [];
+  if (features.wordCount > 80) facebookReasons.push('good storytelling length');
+  else if (features.wordCount > 40) facebookReasons.push('moderate length — could tell more story');
+  else facebookReasons.push('too brief — Facebook rewards longer stories');
+  if (features.hasCta) facebookReasons.push('CTA present');
+  else facebookReasons.push('add a CTA for engagement');
+  if (features.sentiment.polarity > 0.2) facebookReasons.push('emotional connection');
+
   return [
     {
       platform: 'instagram',
-      caption: baseCaption, // Full caption with all hashtags
+      caption: baseCaption,
       hashtags,
-      scorePrediction: Math.min(10, 6 + features.hashtagCount * 0.2 + (features.hasCta ? 1 : 0) + (features.hasPrice ? 0.5 : 0)),
-      reasoning: 'Instagram favors longer captions with 8+ hashtags, CTA, and price mentions for maximum discoverability and conversion',
+      scorePrediction: Math.min(10, 6 + features.hashtagCount * 0.2 + (features.hasCta ? 1 : 0) + (features.hasPrice ? 0.5 : 0) + (features.emojiCount >= 1 ? 0.3 : 0)),
+      reasoning: `Instagram: ${instagramReasons.join(', ')}. ${features.hashtagCount >= 8 ? 'Excellent hashtag density for discovery.' : 'Add more hashtags for better reach.'}`,
     },
     {
       platform: 'twitter',
       caption: `${textOnly.slice(0, 220)}... ${hashtags.slice(0, 3).join(' ')}`.trim().slice(0, 280),
       hashtags: hashtags.slice(0, 3),
-      scorePrediction: Math.min(10, 5.5 + (features.hasCta ? 1.5 : 0) + (features.sentiment.polarity > 0 ? 0.5 : 0)),
-      reasoning: 'Twitter rewards brevity — concise text with 2-3 strategic hashtags and strong CTA drives the most engagement',
+      scorePrediction: Math.min(10, 5.5 + (features.hasCta ? 1.5 : 0) + (features.sentiment.polarity > 0 ? 0.5 : 0) + (textOnly.length <= 200 ? 0.5 : -0.3)),
+      reasoning: `Twitter: ${twitterReasons.join(', ')}. ${textOnly.length <= 200 ? 'Fits perfectly in 280 chars.' : 'Trimmed to fit — keep it punchy.'}`,
     },
     {
       platform: 'facebook',
       caption: textOnly + (hashtags.length > 0 ? '\n\n' + hashtags.slice(0, 5).join(' ') : ''),
       hashtags: hashtags.slice(0, 5),
-      scorePrediction: Math.min(10, 6 + (features.wordCount > 80 ? 1 : 0) + (features.hasCta ? 1 : 0) + (features.sentiment.polarity > 0 ? 0.5 : 0)),
-      reasoning: 'Facebook values storytelling — longer, personal captions with moderate hashtags and emotional connection perform best',
+      scorePrediction: Math.min(10, 6 + (features.wordCount > 80 ? 1 : features.wordCount > 40 ? 0.5 : -0.5) + (features.hasCta ? 1 : 0) + (features.sentiment.polarity > 0.2 ? 0.5 : 0)),
+      reasoning: `Facebook: ${facebookReasons.join(', ')}. ${features.wordCount > 80 ? 'Great storytelling length.' : 'Expand your story for more engagement.'}`,
     },
   ];
 }
