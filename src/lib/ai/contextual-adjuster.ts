@@ -128,7 +128,8 @@ Rules:
         }
 
         response = await fetchResponse.json();
-        _lastDebugInfo += ', API call succeeded';
+        _lastDebugInfo += `, API call succeeded, response keys: ${Object.keys(response).join(',')}`;
+        _lastDebugInfo += `, response code: ${response.code}, msg: ${response.msg || 'none'}`;
       } catch (apiErr: any) {
         _lastDebugInfo += `, API call failed: ${apiErr?.message || String(apiErr)}, cause: ${apiErr?.cause?.message || 'none'}`;
         return null;
