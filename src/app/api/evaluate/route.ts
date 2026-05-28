@@ -111,6 +111,8 @@ export async function POST(request: NextRequest) {
             shapItem.contribution = Math.round((shapItem.contribution * 0.4 + adj.adjustedContribution * 0.6) * 1000) / 1000;
           }
         }
+      } else {
+        debugRefineError = 'refineScores returned null (timeout or API error)';
       }
     } catch (err) {
       // Contextual refinement is non-critical — fall back to heuristic scores
