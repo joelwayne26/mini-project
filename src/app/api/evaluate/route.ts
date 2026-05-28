@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
     let adjustedPosterScore = posterScore;
     let adjustedCaptionScore = captionScoreValue;
     let captionInsight: string | undefined;
+    let debugRefineError: string | undefined;
     try {
       const refined = await refineScores({
         caption,
@@ -113,7 +114,7 @@ export async function POST(request: NextRequest) {
       }
     } catch (err) {
       // Contextual refinement is non-critical — fall back to heuristic scores
-      console.error('Contextual refinement error:', err);
+      debugRefineError = String(err);
     }
 
     // 6. RAG — search for similar high-performing posts
@@ -213,6 +214,7 @@ export async function POST(request: NextRequest) {
       imageQuality,
       imageImprovements,
       ...(captionInsight ? { captionInsight } : {}),
+      ...(debugRefineError ? { _debugRefineError: debugRefineError } : {}),
     };
 
     return NextResponse.json(result);
