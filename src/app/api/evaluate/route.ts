@@ -1,7 +1,7 @@
 /**
  * POST /api/evaluate — Poster evaluation with SHAP + RAG + local caption generation
  * The core endpoint of TrendLens AI v6.0.
- * Now supports real server-side image analysis via Sharp.
+ * Now supports real server-side image analysis via Sharp + visual LLM analysis.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -13,7 +13,7 @@ import { searchSimilarPosts, generateRagInsights } from '@/lib/ai/rag-engine';
 import { computeTrendAlignment } from '@/lib/ai/trend-engine';
 import { classifyCategory, getCategoryRule } from '@/lib/ai/category-rules';
 import { analyzeImageQuality, generateImageImprovementSuggestions } from '@/lib/ai/server-image-analysis';
-import { refineScores, _lastDebugInfo } from '@/lib/ai/contextual-adjuster';
+import { refineScores, _lastDebugInfo, VisualAnalysisResult } from '@/lib/ai/contextual-adjuster';
 import { healthCheck, PostsRepository, GroundTruthRepository, ModelRegistryRepository, EvaluationRepository } from '@/lib/db/client';
 import { PosterEvaluation, BenchmarkData, RagInsight, ShapValue, CaptionVariant, ImageQualityMetrics } from '@/lib/types';
 
@@ -71,10 +71,10 @@ export async function POST(request: NextRequest) {
     const captionScoreValue = computeCaptionScore(captionFeatures, category, benchmarks);
     const confidenceInterval = computeConfidenceInterval(rawScore);
 
-    // 5. Compute SHAP values (with image quality)
-    const shapValues = computeShapValues(captionFeatures, imageQuality);
+    // 5. Initial SHAP values (will be recomputed after visual analysis if features change)
+    let shapValues = computeShapValues(captionFeatures, imageQuality);
 
-    // 5b. Contextual semantic score refinement
+    // 5b. Contextual semantic score refinement with visual analysis
     let adjustedOverall = adjustedOverall_raw;
     let adjustedPosterScore = posterScore;
     let adjustedCaptionScore = captionScoreValue;
@@ -82,10 +82,14 @@ export async function POST(request: NextRequest) {
     let debugRefineError: string | undefined;
     let llmPosterImprovements: string[] | undefined;
     let llmCaptionImprovements: string[] | undefined;
+    let visualAnalysis: VisualAnalysisResult | null = null;
+    let featuresChanged = false;
+
     try {
       const refined = await refineScores({
         caption,
         category,
+        imageBase64: imageBase64 || undefined,
         imageQuality: imageQuality ? {
           brightness: imageQuality.brightness,
           contrast: imageQuality.contrast,
@@ -107,11 +111,45 @@ export async function POST(request: NextRequest) {
         benchmarkSamples: benchmarks.categorySamples,
         modelAuc: benchmarks.modelAuc,
       });
+
       if (refined) {
+        visualAnalysis = refined.visualAnalysis;
+
+        // Override features based on visual analysis
+        if (visualAnalysis) {
+          if (visualAnalysis.visualCtaDetected && !captionFeatures.hasCta) {
+            captionFeatures.hasCta = true;
+            captionFeatures.ctaType = visualAnalysis.visualCtaText || 'visual_cta';
+            (captionFeatures.categoryChecks as Record<string, unknown>).has_cta = true;
+            (captionFeatures.categoryChecks as Record<string, unknown>).cta_check_pass = true;
+            featuresChanged = true;
+          }
+          if (visualAnalysis.visualPriceDetected && !captionFeatures.hasPrice) {
+            captionFeatures.hasPrice = true;
+            (captionFeatures.categoryChecks as Record<string, unknown>).has_price = true;
+            (captionFeatures.categoryChecks as Record<string, unknown>).price_check_pass = true;
+            featuresChanged = true;
+          }
+
+          // Recompute everything after visual feature override
+          if (featuresChanged) {
+            // Recompute SHAP with updated features
+            shapValues = computeShapValues(captionFeatures, imageQuality);
+
+            const updatedRawScore = heuristicScore(captionFeatures, imageQuality);
+            const updatedOverall10 = scoreTo1to10(updatedRawScore);
+            adjustedOverall = benchmarks.dbConnected && benchmarks.categorySamples >= 5
+              ? adjustScoreWithBenchmarks(updatedOverall10, captionFeatures, benchmarks)
+              : updatedOverall10;
+            adjustedPosterScore = computePosterScore(imageQuality, captionFeatures, benchmarks);
+            adjustedCaptionScore = computeCaptionScore(captionFeatures, category, benchmarks);
+          }
+        }
+
         // Blend contextual refinement with heuristic scores (60/40 weighting)
-        adjustedOverall = Math.round((adjustedOverall_raw * 0.4 + refined.overallScore * 0.6) * 10) / 10;
-        adjustedPosterScore = Math.round((posterScore * 0.4 + refined.posterScore * 0.6) * 10) / 10;
-        adjustedCaptionScore = Math.round((captionScoreValue * 0.4 + refined.captionScore * 0.6) * 10) / 10;
+        adjustedOverall = Math.round((adjustedOverall * 0.4 + refined.overallScore * 0.6) * 10) / 10;
+        adjustedPosterScore = Math.round((adjustedPosterScore * 0.4 + refined.posterScore * 0.6) * 10) / 10;
+        adjustedCaptionScore = Math.round((adjustedCaptionScore * 0.4 + refined.captionScore * 0.6) * 10) / 10;
         captionInsight = refined.captionInsight;
 
         // Apply SHAP adjustments from contextual analysis
@@ -160,15 +198,16 @@ export async function POST(request: NextRequest) {
     const captionVariants = generatePlatformVariants(improvedCaption, captionFeatures, category);
 
     // 9. Generate improvements — use contextual improvements if available, otherwise heuristic
+    // The heuristic improvements now also use visual analysis data
     const posterImprovements = llmPosterImprovements && llmPosterImprovements.length > 0
       ? llmPosterImprovements
-      : generatePosterImprovements(captionFeatures, benchmarks, imageQuality);
+      : generatePosterImprovements(captionFeatures, benchmarks, imageQuality, visualAnalysis);
     const captionImprovements = llmCaptionImprovements && llmCaptionImprovements.length > 0
       ? llmCaptionImprovements
-      : generateCaptionImprovements(captionFeatures, category, benchmarks);
+      : generateCaptionImprovements(captionFeatures, category, benchmarks, visualAnalysis);
 
-    // 10. Generate annotations (now with image-based annotations)
-    const annotations = generateAnnotations(captionFeatures, rawScore, imageQuality);
+    // 10. Generate annotations (now with image-based annotations and visual analysis)
+    const annotations = generateAnnotations(captionFeatures, rawScore, imageQuality, visualAnalysis);
 
     // 11. Get model version
     let modelVersion = 'heuristic';
@@ -199,10 +238,18 @@ export async function POST(request: NextRequest) {
           resolution: imageQuality.resolution,
           quality_rating: imageQuality.qualityRating,
         } : null,
+        visual_analysis: visualAnalysis ? {
+          cta_detected: visualAnalysis.visualCtaDetected,
+          cta_text: visualAnalysis.visualCtaText,
+          price_detected: visualAnalysis.visualPriceDetected,
+          price_text: visualAnalysis.visualPriceText,
+          design_quality: visualAnalysis.visualDesignQuality,
+          elements: visualAnalysis.visualElements,
+        } : null,
       });
     } catch { /* Non-critical */ }
 
-    const result: PosterEvaluation & { imageQuality?: ImageQualityMetrics | null; imageImprovements?: string[]; captionInsight?: string } = {
+    const result: PosterEvaluation & { imageQuality?: ImageQualityMetrics | null; imageImprovements?: string[]; captionInsight?: string; visualAnalysis?: VisualAnalysisResult | null } = {
       overallScore: adjustedOverall,
       posterScore: adjustedPosterScore,
       captionScore: adjustedCaptionScore,
@@ -238,6 +285,7 @@ export async function POST(request: NextRequest) {
       imageQuality,
       imageImprovements,
       ...(captionInsight ? { captionInsight } : {}),
+      ...(visualAnalysis ? { visualAnalysis } : {}),
       ...(debugRefineError ? { _debugRefineError: debugRefineError } : {}),
     };
 
@@ -357,32 +405,71 @@ function generatePosterImprovements(
   cf: import('@/lib/types').CaptionFeatures,
   benchmarks: BenchmarkData,
   imageQuality: ImageQualityMetrics | null,
+  visualAnalysis: VisualAnalysisResult | null,
 ): string[] {
   const improvements: string[] = [];
   const db = benchmarks.dbConnected;
   const samples = benchmarks.categorySamples;
 
-  // Only suggest adding what's ACTUALLY missing
-  if (!cf.hasPrice) {
+  // Use visual analysis for accurate CTA/price detection
+  const effectiveHasCta = cf.hasCta || (visualAnalysis?.visualCtaDetected ?? false);
+  const effectiveHasPrice = cf.hasPrice || (visualAnalysis?.visualPriceDetected ?? false);
+
+  // CTA suggestion
+  if (!effectiveHasCta) {
+    if (db && benchmarks.ctaEngagementBoost > 0) {
+      improvements.push(`Add a call-to-action like 'DM to order' — our data shows CTAs boost engagement by ${Math.abs(benchmarks.ctaEngagementBoost * 100).toFixed(1)}%`);
+    } else {
+      improvements.push("No call-to-action found — add text like 'DM to order' or 'WhatsApp 0700 XXX XXX' to drive conversions");
+    }
+  } else {
+    const ctaText = visualAnalysis?.visualCtaText || cf.ctaType;
+    if (ctaText) {
+      improvements.push(`CTA is present ("${ctaText}") — great for driving conversions! Consider making it larger or more prominent`);
+    } else {
+      improvements.push('CTA is present — great for driving conversions! Consider making it more prominent in the design');
+    }
+  }
+
+  // Price suggestion
+  if (!effectiveHasPrice) {
     if (db && benchmarks.priceEngagementBoost > 0) {
       improvements.push(`Add a visible price (e.g., 'UGX 50,000') — based on ${samples} posts, prices boost engagement by ${Math.abs(benchmarks.priceEngagementBoost * 100).toFixed(1)}%`);
     } else {
       improvements.push("No price found — add a visible price (e.g., 'UGX 50,000') to boost buyer intent");
     }
   } else {
-    improvements.push("Price mention is present — good! Consider making it more prominent in the image");
-  }
-
-  if (!cf.hasCta) {
-    if (db && benchmarks.ctaEngagementBoost > 0) {
-      improvements.push(`Add a call-to-action like 'DM to order' — our data shows CTAs boost engagement by ${Math.abs(benchmarks.ctaEngagementBoost * 100).toFixed(1)}%`);
+    const priceText = visualAnalysis?.visualPriceText;
+    if (priceText) {
+      improvements.push(`Price is displayed ("${priceText}") — this builds buyer confidence and increases engagement`);
     } else {
-      improvements.push("No call-to-action — add text like 'DM to order' or 'WhatsApp 0700 XXX XXX'");
+      improvements.push('Price mention is present — good! Consider making it more prominent in the image');
     }
-  } else {
-    improvements.push(`CTA is present ("${cf.ctaType}") — great for driving conversions!`);
   }
 
+  // Visual elements feedback
+  if (visualAnalysis) {
+    if (visualAnalysis.visualDesignQuality === 'excellent') {
+      improvements.push('Poster design is professional and well-structured — excellent visual appeal');
+    } else if (visualAnalysis.visualDesignQuality === 'poor') {
+      improvements.push('Poster design needs improvement — consider using a cleaner layout, better fonts, and more contrast');
+    }
+
+    if (visualAnalysis.visualElements.includes('food_photo')) {
+      improvements.push('Food photo is present — this significantly increases engagement for food businesses');
+    }
+    if (visualAnalysis.visualElements.includes('phone_number')) {
+      improvements.push('Phone number is visible — makes it easy for customers to reach you');
+    }
+    if (visualAnalysis.visualElements.includes('logo')) {
+      improvements.push('Brand logo is displayed — builds brand recognition and trust');
+    }
+    if (visualAnalysis.visualElements.includes('social_icons')) {
+      improvements.push('Social media icons present — helps customers find you on different platforms');
+    }
+  }
+
+  // Caption tone
   if (cf.sentiment.polarity < -0.1) {
     improvements.push('Caption tone is negative — use positive, enthusiastic language to attract customers');
   } else if (cf.sentiment.polarity > 0.2) {
@@ -392,7 +479,7 @@ function generatePosterImprovements(
   // Image-based improvements — reference actual values
   if (imageQuality) {
     if (imageQuality.brightness < 0.25) {
-      improvements.push(`Image is too dark (brightness: ${(imageQuality.brightness * 100).toFixed(0)}%) — use better lighting to make food look appetizing`);
+      improvements.push(`Image is too dark (brightness: ${(imageQuality.brightness * 100).toFixed(0)}%) — use better lighting to make content visible`);
     } else if (imageQuality.brightness > 0.75) {
       improvements.push(`Image is overexposed (brightness: ${(imageQuality.brightness * 100).toFixed(0)}%) — reduce brightness to preserve detail`);
     }
@@ -409,17 +496,26 @@ function generatePosterImprovements(
     if (imageQuality.saturation < 0.15) {
       improvements.push(`Colors look muted (saturation: ${(imageQuality.saturation * 100).toFixed(0)}%) — boost colors to make food pop`);
     }
-  } else {
+  } else if (!visualAnalysis) {
     improvements.push('Add a poster image — posts with images get 2.3x more engagement than text-only posts');
   }
 
   return improvements.slice(0, 8);
 }
 
-function generateCaptionImprovements(cf: import('@/lib/types').CaptionFeatures, category: string, benchmarks: BenchmarkData): string[] {
+function generateCaptionImprovements(
+  cf: import('@/lib/types').CaptionFeatures,
+  category: string,
+  benchmarks: BenchmarkData,
+  visualAnalysis: VisualAnalysisResult | null,
+): string[] {
   const suggestions: string[] = [];
   const rules = getCategoryRule(category);
   const db = benchmarks.dbConnected;
+
+  // Use visual analysis for accurate feature detection
+  const effectiveHasCta = cf.hasCta || (visualAnalysis?.visualCtaDetected ?? false);
+  const effectiveHasPrice = cf.hasPrice || (visualAnalysis?.visualPriceDetected ?? false);
 
   if (cf.hashtagCount < rules.minHashtags) {
     const gap = rules.idealHashtags - cf.hashtagCount;
@@ -433,16 +529,18 @@ function generateCaptionImprovements(cf: import('@/lib/types').CaptionFeatures, 
   }
 
   const checks = cf.categoryChecks as Record<string, unknown>;
-  if (!checks.cta_check_pass) {
+  if (!effectiveHasCta) {
     suggestions.push("Add a call-to-action like 'DM to order', 'Link in bio', or 'WhatsApp 0700 123456'");
   } else {
-    suggestions.push("CTA is present in caption — good for driving action");
+    const ctaText = visualAnalysis?.visualCtaText || cf.ctaType;
+    suggestions.push(ctaText ? `CTA is present ("${ctaText}") — good for driving action` : 'CTA is present in caption — good for driving action');
   }
 
-  if (!checks.price_check_pass) {
+  if (!effectiveHasPrice) {
     suggestions.push("Include pricing (e.g., 'Starting at UGX 50,000') — price mentions increase engagement by up to 30%");
   } else {
-    suggestions.push("Price is mentioned — this builds buyer confidence");
+    const priceText = visualAnalysis?.visualPriceText;
+    suggestions.push(priceText ? `Price is mentioned ("${priceText}") — this builds buyer confidence` : 'Price is mentioned — this builds buyer confidence');
   }
 
   if (cf.wordCount < rules.idealCaptionLength[0]) {
@@ -464,14 +562,18 @@ function generateAnnotations(
   cf: import('@/lib/types').CaptionFeatures,
   score: number,
   imageQuality: ImageQualityMetrics | null,
+  visualAnalysis: VisualAnalysisResult | null,
 ): import('@/lib/types').PosterAnnotation[] {
   const annotations: import('@/lib/types').PosterAnnotation[] = [];
   let num = 1;
 
-  if (!cf.hasPrice) {
+  const effectiveHasCta = cf.hasCta || (visualAnalysis?.visualCtaDetected ?? false);
+  const effectiveHasPrice = cf.hasPrice || (visualAnalysis?.visualPriceDetected ?? false);
+
+  if (!effectiveHasPrice) {
     annotations.push({ number: num++, x: 0.5, y: 0.7, title: 'Missing Price', detail: 'Add a clear price to increase engagement', severity: 'warning' });
   }
-  if (!cf.hasCta) {
+  if (!effectiveHasCta) {
     annotations.push({ number: num++, x: 0.5, y: 0.85, title: 'No CTA', detail: "Add a call-to-action like 'DM to order'", severity: 'warning' });
   }
   if (cf.hashtagCount < 5) {
@@ -488,6 +590,13 @@ function generateAnnotations(
     }
     if (imageQuality.saturation < 0.15) {
       annotations.push({ number: num++, x: 0.7, y: 0.3, title: 'Low Color', detail: 'Boost colors to make food look more appealing', severity: 'info' });
+    }
+  }
+
+  // Visual analysis annotations
+  if (visualAnalysis) {
+    if (visualAnalysis.visualDesignQuality === 'poor') {
+      annotations.push({ number: num++, x: 0.5, y: 0.1, title: 'Design Quality', detail: 'Poster design needs improvement — cleaner layout recommended', severity: 'warning' });
     }
   }
 
