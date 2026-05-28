@@ -111,8 +111,9 @@ export async function POST(request: NextRequest) {
           }
         }
       }
-    } catch {
+    } catch (err) {
       // Contextual refinement is non-critical — fall back to heuristic scores
+      console.error('Contextual refinement error:', err);
     }
 
     // 6. RAG — search for similar high-performing posts
