@@ -23,7 +23,7 @@ const FEATURE_DEFINITIONS: FeatureDef[] = [
     description: 'Number of hashtags in the caption',
     getValue: (cf) => Math.min(1, cf.hashtagCount / 10),
     getWeight: () => 12,
-    getContribution: (v, w) => v > 0.7 ? w : v > 0.4 ? w * 0.6 : -w * 0.4,
+    getContribution: (v, w) => v > 0.7 ? w : v > 0.4 ? w * (v - 0.2) : -w * (0.5 - v),
   },
   {
     name: 'Call to Action',
@@ -48,21 +48,21 @@ const FEATURE_DEFINITIONS: FeatureDef[] = [
       return cf.wordCount < 20 ? 0 : 0.7;
     },
     getWeight: () => 8,
-    getContribution: (v, w) => v > 0.8 ? w : v > 0.4 ? w * 0.5 : -w * 0.8,
+    getContribution: (v, w) => v > 0.8 ? w : v > 0.4 ? w * (v - 0.1) : -w * (0.9 - v),
   },
   {
     name: 'Sentiment',
     description: 'Positive tone in the caption',
-    getValue: (cf) => (cf.sentiment.polarity + 1) / 2, // normalize to 0-1
+    getValue: (cf) => (cf.sentiment.polarity + 1) / 2,
     getWeight: () => 5,
-    getContribution: (v, w) => v > 0.6 ? w * (v - 0.5) : v < 0.4 ? -w * (0.5 - v) : 0,
+    getContribution: (v, w) => v > 0.6 ? w * (v - 0.4) : v < 0.4 ? -w * (0.5 - v) : 0,
   },
   {
     name: 'Trend Alignment',
     description: 'Alignment with current trending topics',
-    getValue: (cf) => cf.trendAlignment.score,
+    getValue: (cf) => cf.trendAlignment?.score ?? 0,
     getWeight: () => 10,
-    getContribution: (v, w) => v * w,
+    getContribution: (v, w) => v > 0.3 ? w * v : v > 0.1 ? w * v * 0.5 : -w * (0.1 - v),
   },
   {
     name: 'Emojis',
@@ -76,35 +76,53 @@ const FEATURE_DEFINITIONS: FeatureDef[] = [
     description: 'How easy the caption is to read',
     getValue: (cf) => cf.readability,
     getWeight: () => 3,
-    getContribution: (v, w) => v > 0.6 ? w * 0.5 : -w * 0.2,
+    getContribution: (v, w) => v > 0.6 ? w * (v - 0.3) : -w * (0.4 - v),
   },
   {
     name: 'Image Brightness',
     description: 'Poster image brightness level',
-    getValue: (_, iq) => iq ? (iq.brightness > 0.2 && iq.brightness < 0.8 ? 1 : iq.brightness < 0.15 ? 0.2 : 0.6) : 0.5,
+    getValue: (_, iq) => {
+      if (!iq) return 0.5;
+      // Continuous: sweet spot 0.35-0.65 scores highest, too dark/bright scores low
+      const b = iq.brightness;
+      if (b >= 0.35 && b <= 0.65) return 0.8 + (0.2 * (1 - Math.abs(b - 0.5) / 0.15));
+      if (b >= 0.2 && b <= 0.8) return 0.4 + 0.4 * (1 - Math.min(Math.abs(b - 0.5), 0.3) / 0.3);
+      return Math.max(0.1, 0.3 - Math.abs(b - 0.5));
+    },
     getWeight: () => 5,
-    getContribution: (v, w) => v > 0.7 ? w * 0.8 : v < 0.3 ? -w * 0.5 : w * 0.3,
+    getContribution: (v, w) => v > 0.8 ? w * v * 0.8 : v > 0.5 ? w * v * 0.5 : -w * (0.5 - v),
   },
   {
     name: 'Image Sharpness',
     description: 'Image clarity (blur detection)',
     getValue: (_, iq) => iq ? iq.blurScore : 0.5,
     getWeight: () => 4,
-    getContribution: (v, w) => v > 0.5 ? w * 0.5 : -w * 0.4,
+    getContribution: (v, w) => v > 0.6 ? w * v * 0.6 : v > 0.3 ? w * v * 0.3 : -w * (0.3 - v),
   },
   {
     name: 'Color Saturation',
     description: 'Vibrancy of poster colors',
-    getValue: (_, iq) => iq ? iq.saturation : 0.3,
+    getValue: (_, iq) => {
+      if (!iq) return 0.3;
+      // Continuous: higher saturation = more vibrant food photos
+      return Math.min(1, iq.saturation * 2.5);
+    },
     getWeight: () => 3,
-    getContribution: (v, w) => v > 0.3 ? w * 0.6 : v > 0.15 ? w * 0.3 : -w * 0.1,
+    getContribution: (v, w) => v > 0.6 ? w * v * 0.6 : v > 0.3 ? w * v * 0.3 : -w * (0.3 - v),
   },
   {
-    name: 'Category Keywords',
-    description: 'Required keywords for the category',
-    getValue: (cf) => cf.categoryChecks.has_required_keywords ? 1 : 0.5,
-    getWeight: () => 5,
-    getContribution: (v, w) => v > 0.8 ? w : -w * 0.3 * (1 - v),
+    name: 'Image Resolution',
+    description: 'Image pixel dimensions',
+    getValue: (_, iq) => {
+      if (!iq) return 0.3;
+      const w = iq.resolution?.width ?? 0;
+      if (w >= 1080) return 1.0;
+      if (w >= 720) return 0.7;
+      if (w >= 480) return 0.4;
+      return 0.15;
+    },
+    getWeight: () => 3,
+    getContribution: (v, w) => v > 0.7 ? w * 0.5 : v > 0.4 ? w * v * 0.3 : -w * (0.4 - v),
   },
 ];
 
