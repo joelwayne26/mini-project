@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     let captionFeatures = extractCaptionFeatures(caption, category);
 
     // Update trend alignment with actual trend data
-    const trendAlignment = computeTrendAlignment(caption, category);
+    const trendAlignment = await computeTrendAlignment(caption, category);
     captionFeatures = {
       ...captionFeatures,
       trendAlignment,

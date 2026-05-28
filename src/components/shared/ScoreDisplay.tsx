@@ -14,6 +14,9 @@ interface ScoreDisplayProps {
 }
 
 export function ScoreDisplay({ score, label, size = 'md', showLabel = true }: ScoreDisplayProps) {
+  // Protect against null/undefined/NaN scores
+  const safeScore = (score != null && !isNaN(score)) ? score : 0;
+
   const getColor = (s: number) => {
     if (s >= 8) return 'text-emerald-600';
     if (s >= 6) return 'text-amber-600';
@@ -31,9 +34,9 @@ export function ScoreDisplay({ score, label, size = 'md', showLabel = true }: Sc
   const sizeClass = size === 'lg' ? 'text-4xl' : size === 'md' ? 'text-2xl' : 'text-xl';
 
   return (
-    <div className={cn('flex flex-col items-center gap-1 p-3 rounded-xl border', getBgColor(score))}>
-      <span className={cn('font-bold', sizeClass, getColor(score))}>
-        {score.toFixed(1)}
+    <div className={cn('flex flex-col items-center gap-1 p-3 rounded-xl border', getBgColor(safeScore))}>
+      <span className={cn('font-bold', sizeClass, getColor(safeScore))}>
+        {safeScore.toFixed(1)}
       </span>
       {showLabel && <span className="text-xs text-muted-foreground font-medium">{label}</span>}
     </div>

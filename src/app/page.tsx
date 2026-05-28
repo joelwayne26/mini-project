@@ -279,7 +279,7 @@ export default function TrendLensDashboard() {
                           <ScoreDisplay score={evaluation.captionScore} label="Caption" />
                         </div>
                         <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
-                          <span>Confidence: {evaluation.confidenceInterval.lower.toFixed(1)} - {evaluation.confidenceInterval.upper.toFixed(1)}</span>
+                          <span>Confidence: {(evaluation.confidenceInterval?.lower ?? 0).toFixed(1)} - {(evaluation.confidenceInterval?.upper ?? 0).toFixed(1)}</span>
                           <Badge variant="outline" className="text-xs">
                             {evaluation.dataSource === 'mongodb' ? 'Data-driven' : 'Heuristic'}
                           </Badge>
