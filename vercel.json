@@ -1,0 +1,11 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "outputDirectory": ".next",
+  "regions": ["iad1"],
+  "env": {
+    "MONGO_URI": "@mongo-uri",
+    "MONGO_DB_NAME": "trendlens"
+  }
+}

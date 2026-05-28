@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 200 60% 98%;
+    --foreground: 215 25% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 15%;
+    --primary: 199 89% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 200 30% 94%;
+    --secondary-foreground: 215 25% 15%;
+    --muted: 200 20% 93%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 199 89% 48%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 200 20% 88%;
+    --input: 200 20% 88%;
+    --ring: 199 89% 48%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    @apply bg-sky-50 text-slate-800 antialiased;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #e0f2fe;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #7dd3fc;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #38bdf8;
+}
+
+/* Pentagon logo clip-path */
+.pentagon-logo {
+  clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%);
+}
+
+/* Pulse animation for status indicators */
+@keyframes pulse-sky {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-sky {
+  animation: pulse-sky 2s ease-in-out infinite;
+}
+
+/* Tab icon hover effect */
+.tab-icon {
+  transition: all 0.2s ease;
+}
+.tab-icon:hover {
+  transform: translateY(-2px);
+}
+.tab-icon.active {
+  transform: translateY(-2px);
+}
+
+/* Card shadow on hover */
+.card-hover {
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+}
+.card-hover:hover {
+  box-shadow: 0 4px 20px rgba(14, 165, 233, 0.15);
+  transform: translateY(-1px);
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}

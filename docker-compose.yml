@@ -1,0 +1,100 @@
+version: "3.8"
+
+services:
+  # ─── MongoDB ──────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    container_name: trendlens-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: trendlens
+      MONGO_INITDB_ROOT_PASSWORD: trendlens123
+      MONGO_INITDB_DATABASE: trendlens
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ─── TrendLens AI Backend (FastAPI) ──────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: trendlens-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://trendlens:trendlens123@mongodb:27017/trendlens?authSource=admin
+      - MONGO_DB_NAME=trendlens
+      - RETRAIN_MIN_SAMPLES=30
+      - RETRAIN_INTERVAL_HOURS=24
+      - ENVIRONMENT=production
+    volumes:
+      - model_data:/app/models
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # ─── TrendLens AI Frontend (Next.js) ────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    container_name: trendlens-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # ─── MongoDB Seed (runs once) ───────────────────────────────────────────
+  seed:
+    build: ./backend
+    container_name: trendlens-seed
+    restart: "no"
+    environment:
+      - MONGO_URI=mongodb://trendlens:trendlens123@mongodb:27017/trendlens?authSource=admin
+      - MONGO_DB_NAME=trendlens
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command: ["python", "-m", "scripts.seed_mongodb"]
+
+  # ─── Mongo Express (Admin UI - optional) ────────────────────────────────
+  mongo-express:
+    image: mongo-express:1.0
+    container_name: trendlens-mongo-express
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: trendlens
+      ME_CONFIG_MONGODB_ADMINPASSWORD: trendlens123
+      ME_CONFIG_MONGODB_URL: mongodb://trendlens:trendlens123@mongodb:27017/
+      ME_CONFIG_BASICAUTH: false
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  mongodb_data:
+    driver: local
+  model_data:
+    driver: local

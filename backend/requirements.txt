@@ -1,0 +1,22 @@
+# TrendLens AI v6.0 — Backend Dependencies
+fastapi==0.110.0
+uvicorn==0.27.1
+pymongo==4.6.1
+python-dotenv==1.0.0
+python-multipart==0.0.9
+numpy==1.26.3
+pandas==2.1.4
+scikit-learn==1.3.2
+xgboost==2.0.3
+sentence-transformers==2.3.1
+Pillow==10.2.0
+slowapi==0.1.9
+requests==2.31.0
+pytrends==4.9.2
+feedparser==6.0.11
+textblob==0.17.1
+emoji==2.10.1
+torch==2.2.0
+torchvision==0.17.0
+open-clip-torch==2.24.0
+easyocr==1.7.1
