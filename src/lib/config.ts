@@ -42,6 +42,10 @@ export const config = {
 
   // Image processing
   maxImageSizeMB: parseInt(process.env.MAX_IMAGE_SIZE_MB || '10'),
+
+  // Silent enhancement (optional — fallback to heuristics if unavailable)
+  enhanceEnabled: process.env.ENHANCE === 'true',
+  enhanceModel: process.env.ENHANCE_MODEL || 'glm-4-flash',
 } as const;
 
 export type Config = typeof config;

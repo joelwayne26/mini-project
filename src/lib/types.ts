@@ -33,6 +33,7 @@ export interface PosterEvaluation {
   evaluatedAt: string;
   dataSource: 'mongodb' | 'heuristic';
   benchmarks: BenchmarkData;
+  captionInsight?: string;
 }
 
 export interface PosterAnnotation {

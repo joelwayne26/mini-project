@@ -13,6 +13,7 @@ import { searchSimilarPosts, generateRagInsights } from '@/lib/ai/rag-engine';
 import { computeTrendAlignment } from '@/lib/ai/trend-engine';
 import { classifyCategory, getCategoryRule } from '@/lib/ai/category-rules';
 import { analyzeImageQuality, generateImageImprovementSuggestions } from '@/lib/ai/server-image-analysis';
+import { refineScores } from '@/lib/ai/contextual-adjuster';
 import { healthCheck, PostsRepository, GroundTruthRepository, ModelRegistryRepository, EvaluationRepository } from '@/lib/db/client';
 import { PosterEvaluation, BenchmarkData, RagInsight, ShapValue, CaptionVariant, ImageQualityMetrics } from '@/lib/types';
 
@@ -62,7 +63,7 @@ export async function POST(request: NextRequest) {
     // 4. Compute scores (now using real image quality)
     const rawScore = heuristicScore(captionFeatures, imageQuality);
     const overall10 = scoreTo1to10(rawScore);
-    const adjustedOverall = benchmarks.dbConnected && benchmarks.categorySamples >= 5
+    const adjustedOverall_raw = benchmarks.dbConnected && benchmarks.categorySamples >= 5
       ? adjustScoreWithBenchmarks(overall10, captionFeatures, benchmarks)
       : overall10;
 
@@ -72,6 +73,47 @@ export async function POST(request: NextRequest) {
 
     // 5. Compute SHAP values (with image quality)
     const shapValues = computeShapValues(captionFeatures, imageQuality);
+
+    // 5b. Contextual semantic score refinement
+    let adjustedOverall = adjustedOverall_raw;
+    let adjustedPosterScore = posterScore;
+    let adjustedCaptionScore = captionScoreValue;
+    let captionInsight: string | undefined;
+    try {
+      const refined = await refineScores({
+        caption,
+        category,
+        imageQuality: imageQuality ? {
+          brightness: imageQuality.brightness,
+          contrast: imageQuality.contrast,
+          saturation: imageQuality.saturation,
+          blurScore: imageQuality.blurScore,
+          resolution: imageQuality.resolution,
+          qualityRating: imageQuality.qualityRating,
+        } : null,
+        heuristicOverall: adjustedOverall_raw,
+        heuristicPoster: posterScore,
+        heuristicCaption: captionScoreValue,
+        shapValues: shapValues.map(s => ({ feature: s.feature, value: s.value, contribution: s.contribution })),
+      });
+      if (refined) {
+        // Blend contextual refinement with heuristic scores (60/40 weighting)
+        adjustedOverall = Math.round((adjustedOverall_raw * 0.4 + refined.overallScore * 0.6) * 10) / 10;
+        adjustedPosterScore = Math.round((posterScore * 0.4 + refined.posterScore * 0.6) * 10) / 10;
+        adjustedCaptionScore = Math.round((captionScoreValue * 0.4 + refined.captionScore * 0.6) * 10) / 10;
+        captionInsight = refined.captionInsight;
+
+        // Apply SHAP adjustments from contextual analysis
+        for (const adj of refined.shapAdjustments) {
+          const shapItem = shapValues.find(s => s.feature === adj.feature);
+          if (shapItem) {
+            shapItem.contribution = Math.round((shapItem.contribution * 0.4 + adj.adjustedContribution * 0.6) * 1000) / 1000;
+          }
+        }
+      }
+    } catch {
+      // Contextual refinement is non-critical — fall back to heuristic scores
+    }
 
     // 6. RAG — search for similar high-performing posts
     let ragInsights: RagInsight[] = [];
@@ -117,8 +159,8 @@ export async function POST(request: NextRequest) {
         caption,
         image_url: imageUrl || '',
         overall_score: adjustedOverall,
-        poster_score: posterScore,
-        caption_score: captionScoreValue,
+        poster_score: adjustedPosterScore,
+        caption_score: adjustedCaptionScore,
         category,
         model_version: modelVersion,
         shap_values: shapValues.map(s => ({ feature: s.feature, contribution: s.contribution })),
@@ -134,10 +176,10 @@ export async function POST(request: NextRequest) {
       });
     } catch { /* Non-critical */ }
 
-    const result: PosterEvaluation & { imageQuality?: ImageQualityMetrics | null; imageImprovements?: string[] } = {
+    const result: PosterEvaluation & { imageQuality?: ImageQualityMetrics | null; imageImprovements?: string[]; captionInsight?: string } = {
       overallScore: adjustedOverall,
-      posterScore,
-      captionScore: captionScoreValue,
+      posterScore: adjustedPosterScore,
+      captionScore: adjustedCaptionScore,
       confidenceInterval: {
         lower: scoreTo1to10(confidenceInterval.lower),
         upper: scoreTo1to10(confidenceInterval.upper),
@@ -169,6 +211,7 @@ export async function POST(request: NextRequest) {
       benchmarks,
       imageQuality,
       imageImprovements,
+      ...(captionInsight ? { captionInsight } : {}),
     };
 
     return NextResponse.json(result);

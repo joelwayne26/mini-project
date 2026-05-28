@@ -303,6 +303,19 @@ export default function TrendLensDashboard() {
                         </CardContent>
                       </Card>
                     )}
+
+                    {/* Caption Insight */}
+                    {(evaluation as any).captionInsight && (
+                      <Card className="border-blue-200 bg-blue-50/50 dark:bg-blue-950/20 dark:border-blue-800">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-base flex items-center gap-2">{Icons.insights} Caption Insight</CardTitle>
+                          <CardDescription>Contextual semantic analysis of your caption</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-sm text-muted-foreground">{(evaluation as any).captionInsight}</p>
+                        </CardContent>
+                      </Card>
+                    )}
                   </>
                 ) : (
                   <Card className="flex items-center justify-center min-h-[200px]">
