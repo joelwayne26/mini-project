@@ -69,7 +69,24 @@ export async function refineScores(params: {
     const refinementPromise = (async () => {
       let response: any;
       try {
-        response = await zai.chat.completions.create({
+        // Try using fetch directly to diagnose DNS/connectivity issues
+        const baseUrl = process.env.ZAI_BASE_URL || '';
+        const apiKey = process.env.ZAI_API_KEY || '';
+        const chatId = process.env.ZAI_CHAT_ID || '';
+        const token = process.env.ZAI_TOKEN || '';
+        const userId = process.env.ZAI_USER_ID || '';
+
+        const fetchUrl = `${baseUrl}/chat/completions`;
+        const fetchHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'X-Z-AI-From': 'Z',
+        };
+        if (chatId) fetchHeaders['X-Chat-Id'] = chatId;
+        if (userId) fetchHeaders['X-User-Id'] = userId;
+        if (token) fetchHeaders['X-Token'] = token;
+
+        const fetchBody = JSON.stringify({
           messages: [
             {
               role: 'system',
@@ -95,10 +112,25 @@ Rules:
 - shapAdjustments should contain adjusted contributions for each feature`,
             },
           ],
+          thinking: { type: 'disabled' },
         });
+
+        const fetchResponse = await fetch(fetchUrl, {
+          method: 'POST',
+          headers: fetchHeaders,
+          body: fetchBody,
+        });
+
+        if (!fetchResponse.ok) {
+          const errorBody = await fetchResponse.text();
+          _lastDebugInfo += `, API HTTP error ${fetchResponse.status}: ${errorBody.substring(0, 200)}`;
+          return null;
+        }
+
+        response = await fetchResponse.json();
         _lastDebugInfo += ', API call succeeded';
       } catch (apiErr: any) {
-        _lastDebugInfo += `, API call failed: ${apiErr?.message || String(apiErr)}`;
+        _lastDebugInfo += `, API call failed: ${apiErr?.message || String(apiErr)}, cause: ${apiErr?.cause?.message || 'none'}`;
         return null;
       }
 
