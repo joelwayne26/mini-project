@@ -362,12 +362,15 @@ function generatePosterImprovements(
   const db = benchmarks.dbConnected;
   const samples = benchmarks.categorySamples;
 
+  // Only suggest adding what's ACTUALLY missing
   if (!cf.hasPrice) {
     if (db && benchmarks.priceEngagementBoost > 0) {
       improvements.push(`Add a visible price (e.g., 'UGX 50,000') — based on ${samples} posts, prices boost engagement by ${Math.abs(benchmarks.priceEngagementBoost * 100).toFixed(1)}%`);
     } else {
       improvements.push("No price found — add a visible price (e.g., 'UGX 50,000') to boost buyer intent");
     }
+  } else {
+    improvements.push("Price mention is present — good! Consider making it more prominent in the image");
   }
 
   if (!cf.hasCta) {
@@ -376,22 +379,35 @@ function generatePosterImprovements(
     } else {
       improvements.push("No call-to-action — add text like 'DM to order' or 'WhatsApp 0700 XXX XXX'");
     }
+  } else {
+    improvements.push(`CTA is present ("${cf.ctaType}") — great for driving conversions!`);
   }
 
   if (cf.sentiment.polarity < -0.1) {
     improvements.push('Caption tone is negative — use positive, enthusiastic language to attract customers');
+  } else if (cf.sentiment.polarity > 0.2) {
+    improvements.push('Positive caption tone — this helps attract customers');
   }
 
-  // Image-based improvements
+  // Image-based improvements — reference actual values
   if (imageQuality) {
     if (imageQuality.brightness < 0.25) {
-      improvements.push('Your poster image is too dark — use better lighting to make the food look appetizing');
+      improvements.push(`Image is too dark (brightness: ${(imageQuality.brightness * 100).toFixed(0)}%) — use better lighting to make food look appetizing`);
+    } else if (imageQuality.brightness > 0.75) {
+      improvements.push(`Image is overexposed (brightness: ${(imageQuality.brightness * 100).toFixed(0)}%) — reduce brightness to preserve detail`);
     }
     if (imageQuality.blurScore < 0.25) {
-      improvements.push('Image appears blurry — use a stable camera and tap to focus for sharp food photos');
+      improvements.push(`Image appears blurry (sharpness: ${(imageQuality.blurScore * 100).toFixed(0)}%) — use a stable camera and tap to focus`);
+    } else if (imageQuality.blurScore > 0.5) {
+      improvements.push(`Image is sharp (sharpness: ${(imageQuality.blurScore * 100).toFixed(0)}%) — excellent for social media`);
     }
     if (imageQuality.resolution.width < 480) {
-      improvements.push('Image resolution is too low for social media — use at least 1080px wide');
+      improvements.push(`Low resolution (${imageQuality.resolution.width}x${imageQuality.resolution.height}) — use at least 1080px wide`);
+    } else if (imageQuality.resolution.width >= 1080) {
+      improvements.push(`Good resolution (${imageQuality.resolution.width}x${imageQuality.resolution.height}) — looks great on all platforms`);
+    }
+    if (imageQuality.saturation < 0.15) {
+      improvements.push(`Colors look muted (saturation: ${(imageQuality.saturation * 100).toFixed(0)}%) — boost colors to make food pop`);
     }
   } else {
     improvements.push('Add a poster image — posts with images get 2.3x more engagement than text-only posts');
@@ -412,23 +428,33 @@ function generateCaptionImprovements(cf: import('@/lib/types').CaptionFeatures, 
     } else {
       suggestions.push(`Add ${gap} more hashtags — ${rules.idealHashtags}+ is ideal for ${category} posts`);
     }
+  } else if (cf.hashtagCount >= rules.idealHashtags) {
+    suggestions.push(`Hashtag count is strong (${cf.hashtagCount}) — great discoverability`);
   }
 
   const checks = cf.categoryChecks as Record<string, unknown>;
   if (!checks.cta_check_pass) {
     suggestions.push("Add a call-to-action like 'DM to order', 'Link in bio', or 'WhatsApp 0700 123456'");
+  } else {
+    suggestions.push("CTA is present in caption — good for driving action");
   }
 
   if (!checks.price_check_pass) {
     suggestions.push("Include pricing (e.g., 'Starting at UGX 50,000') — price mentions increase engagement by up to 30%");
+  } else {
+    suggestions.push("Price is mentioned — this builds buyer confidence");
   }
 
   if (cf.wordCount < rules.idealCaptionLength[0]) {
     suggestions.push(`Caption is too short (${cf.wordCount} words) — aim for ${rules.idealCaptionLength[0]}-${rules.idealCaptionLength[1]} words`);
+  } else if (cf.wordCount >= rules.idealCaptionLength[0] && cf.wordCount <= rules.idealCaptionLength[1]) {
+    suggestions.push(`Caption length is good (${cf.wordCount} words) — optimal for engagement`);
   }
 
   if (cf.trendAlignment.score < 0.2 && cf.trendAlignment.bestTrendKeyword) {
     suggestions.push(`Low trend alignment — incorporate trending topics like '${cf.trendAlignment.bestTrendKeyword}'`);
+  } else if (cf.trendAlignment.score >= 0.2) {
+    suggestions.push(`Good trend alignment (score: ${(cf.trendAlignment.score * 100).toFixed(0)}%) — caption matches current trends`);
   }
 
   return suggestions.slice(0, 6);

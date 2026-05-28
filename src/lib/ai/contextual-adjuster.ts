@@ -12,20 +12,22 @@ import ZAI from 'z-ai-web-dev-sdk';
 export let _lastDebugInfo = '';
 
 async function createZaiInstance(): Promise<InstanceType<typeof ZAI>> {
+  // Try env vars first (set on Vercel), then fall back to config file
   const baseUrl = process.env.ZAI_BASE_URL;
   const apiKey = process.env.ZAI_API_KEY;
 
-  _lastDebugInfo = `baseUrl=${baseUrl ? 'SET' : 'MISSING'}, apiKey=${apiKey ? 'SET' : 'MISSING'}`;
+  _lastDebugInfo = `env: baseUrl=${baseUrl ? 'SET' : 'MISSING'}, apiKey=${apiKey ? 'SET' : 'MISSING'}`;
 
   if (baseUrl && apiKey) {
     const config: Record<string, string> = { baseUrl, apiKey };
     if (process.env.ZAI_CHAT_ID) config.chatId = process.env.ZAI_CHAT_ID;
     if (process.env.ZAI_USER_ID) config.userId = process.env.ZAI_USER_ID;
     if (process.env.ZAI_TOKEN) config.token = process.env.ZAI_TOKEN;
+    _lastDebugInfo += ', using env config';
     return new ZAI(config as any);
   }
 
-  _lastDebugInfo += ', falling back to ZAI.create()';
+  _lastDebugInfo += ', using ZAI.create()';
   return ZAI.create();
 }
 
