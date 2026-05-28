@@ -13,7 +13,7 @@ import { searchSimilarPosts, generateRagInsights } from '@/lib/ai/rag-engine';
 import { computeTrendAlignment } from '@/lib/ai/trend-engine';
 import { classifyCategory, getCategoryRule } from '@/lib/ai/category-rules';
 import { analyzeImageQuality, generateImageImprovementSuggestions } from '@/lib/ai/server-image-analysis';
-import { refineScores } from '@/lib/ai/contextual-adjuster';
+import { refineScores, _lastDebugInfo } from '@/lib/ai/contextual-adjuster';
 import { healthCheck, PostsRepository, GroundTruthRepository, ModelRegistryRepository, EvaluationRepository } from '@/lib/db/client';
 import { PosterEvaluation, BenchmarkData, RagInsight, ShapValue, CaptionVariant, ImageQualityMetrics } from '@/lib/types';
 
@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
           }
         }
       } else {
-        debugRefineError = 'refineScores returned null (timeout or API error)';
+        debugRefineError = `refineScores returned null. Debug: ${_lastDebugInfo}`;
       }
     } catch (err) {
       // Contextual refinement is non-critical — fall back to heuristic scores

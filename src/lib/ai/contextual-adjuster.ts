@@ -7,6 +7,9 @@
 
 import ZAI from 'z-ai-web-dev-sdk';
 
+// Global debug string for diagnosing issues in production
+export let _lastDebugInfo = '';
+
 /**
  * Creates a ZAI instance using environment configuration when available,
  * falling back to the default config file lookup.
@@ -14,6 +17,8 @@ import ZAI from 'z-ai-web-dev-sdk';
 async function createZaiInstance(): Promise<InstanceType<typeof ZAI>> {
   const baseUrl = process.env.ZAI_BASE_URL;
   const apiKey = process.env.ZAI_API_KEY;
+
+  _lastDebugInfo = `baseUrl=${baseUrl ? 'SET' : 'MISSING'}, apiKey=${apiKey ? 'SET' : 'MISSING'}`;
 
   if (baseUrl && apiKey) {
     const config: Record<string, string> = { baseUrl, apiKey };
@@ -23,6 +28,7 @@ async function createZaiInstance(): Promise<InstanceType<typeof ZAI>> {
     return new ZAI(config as any);
   }
 
+  _lastDebugInfo += ', falling back to config file';
   return ZAI.create();
 }
 
@@ -51,21 +57,27 @@ export async function refineScores(params: {
 } | null> {
   try {
     const zai = await createZaiInstance();
+    _lastDebugInfo += ', zai instance created';
 
     const timeoutPromise = new Promise<null>((resolve) => {
-      setTimeout(() => resolve(null), 10000);
+      setTimeout(() => {
+        _lastDebugInfo += ', TIMED_OUT';
+        resolve(null);
+      }, 10000);
     });
 
     const refinementPromise = (async () => {
-      const response = await zai.chat.completions.create({
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a social media poster evaluation assistant. Analyze the poster data and provide score adjustments as JSON. Return ONLY valid JSON with no markdown formatting, no code blocks, no explanation outside the JSON.',
-          },
-          {
-            role: 'user',
-            content: `Analyze this social media poster and provide refined scores.
+      let response: any;
+      try {
+        response = await zai.chat.completions.create({
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a social media poster evaluation assistant. Analyze the poster data and provide score adjustments as JSON. Return ONLY valid JSON with no markdown formatting, no code blocks, no explanation outside the JSON.',
+            },
+            {
+              role: 'user',
+              content: `Analyze this social media poster and provide refined scores.
 
 Caption: "${params.caption}"
 Category: ${params.category}
@@ -81,15 +93,22 @@ Rules:
 - Adjust heuristic scores based on contextual semantic analysis
 - captionInsight should be a concise 1-2 sentence insight about the caption quality
 - shapAdjustments should contain adjusted contributions for each feature`,
-          },
-        ],
-      });
+            },
+          ],
+        });
+        _lastDebugInfo += ', API call succeeded';
+      } catch (apiErr: any) {
+        _lastDebugInfo += `, API call failed: ${apiErr?.message || String(apiErr)}`;
+        return null;
+      }
 
       const content = response.choices?.[0]?.message?.content;
       if (!content) {
-        console.error('Contextual adjuster: empty response content');
+        _lastDebugInfo += ', empty response content';
         return null;
       }
+
+      _lastDebugInfo += `, content length: ${content.length}`;
 
       // Strip markdown code fences if present
       const cleaned = content.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
@@ -97,8 +116,8 @@ Rules:
       let parsed: any;
       try {
         parsed = JSON.parse(cleaned);
-      } catch (parseErr) {
-        console.error('Contextual adjuster: JSON parse error:', parseErr, 'Raw:', cleaned.substring(0, 200));
+      } catch (parseErr: any) {
+        _lastDebugInfo += `, JSON parse error: ${parseErr?.message || String(parseErr)}, raw: ${cleaned.substring(0, 150)}`;
         return null;
       }
 
@@ -110,10 +129,11 @@ Rules:
         !Array.isArray(parsed.shapAdjustments) ||
         typeof parsed.captionInsight !== 'string'
       ) {
-        console.error('Contextual adjuster: invalid response structure:', JSON.stringify(parsed).substring(0, 200));
+        _lastDebugInfo += `, invalid structure: keys=${Object.keys(parsed).join(',')}`;
         return null;
       }
 
+      _lastDebugInfo += ', validation passed';
       return {
         overallScore: Math.max(1, Math.min(10, Math.round(parsed.overallScore * 10) / 10)),
         posterScore: Math.max(1, Math.min(10, Math.round(parsed.posterScore * 10) / 10)),
@@ -129,9 +149,8 @@ Rules:
     })();
 
     return Promise.race([refinementPromise, timeoutPromise]);
-  } catch (err) {
-    // Contextual adjustment unavailable — return null for graceful fallback
-    console.error('Contextual adjuster: outer error:', err);
+  } catch (err: any) {
+    _lastDebugInfo += `, outer error: ${err?.message || String(err)}`;
     return null;
   }
 }
