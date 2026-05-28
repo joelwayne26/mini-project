@@ -16,13 +16,11 @@ async function createZaiInstance(): Promise<InstanceType<typeof ZAI>> {
   const apiKey = process.env.ZAI_API_KEY;
 
   if (baseUrl && apiKey) {
-    return new ZAI({
-      baseUrl,
-      apiKey,
-      chatId: process.env.ZAI_CHAT_ID,
-      userId: process.env.ZAI_USER_ID,
-      token: process.env.ZAI_TOKEN,
-    } as any);
+    const config: Record<string, string> = { baseUrl, apiKey };
+    if (process.env.ZAI_CHAT_ID) config.chatId = process.env.ZAI_CHAT_ID;
+    if (process.env.ZAI_USER_ID) config.userId = process.env.ZAI_USER_ID;
+    if (process.env.ZAI_TOKEN) config.token = process.env.ZAI_TOKEN;
+    return new ZAI(config as any);
   }
 
   return ZAI.create();
@@ -88,12 +86,21 @@ Rules:
       });
 
       const content = response.choices?.[0]?.message?.content;
-      if (!content) return null;
+      if (!content) {
+        console.error('Contextual adjuster: empty response content');
+        return null;
+      }
 
       // Strip markdown code fences if present
       const cleaned = content.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
 
-      const parsed = JSON.parse(cleaned);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.error('Contextual adjuster: JSON parse error:', parseErr, 'Raw:', cleaned.substring(0, 200));
+        return null;
+      }
 
       // Validate the response structure
       if (
@@ -103,6 +110,7 @@ Rules:
         !Array.isArray(parsed.shapAdjustments) ||
         typeof parsed.captionInsight !== 'string'
       ) {
+        console.error('Contextual adjuster: invalid response structure:', JSON.stringify(parsed).substring(0, 200));
         return null;
       }
 
@@ -121,8 +129,9 @@ Rules:
     })();
 
     return Promise.race([refinementPromise, timeoutPromise]);
-  } catch {
+  } catch (err) {
     // Contextual adjustment unavailable — return null for graceful fallback
+    console.error('Contextual adjuster: outer error:', err);
     return null;
   }
 }
