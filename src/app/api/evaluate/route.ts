@@ -16,6 +16,8 @@ import { analyzeImageQuality, generateImageImprovementSuggestions } from '@/lib/
 import { healthCheck, PostsRepository, GroundTruthRepository, ModelRegistryRepository, EvaluationRepository } from '@/lib/db/client';
 import { PosterEvaluation, BenchmarkData, RagInsight, ShapValue, CaptionVariant, ImageQualityMetrics } from '@/lib/types';
 
+export const maxDuration = 60; // Allow up to 60s for Vercel Pro; free tier caps at 10s
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
