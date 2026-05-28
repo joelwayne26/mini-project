@@ -63,7 +63,7 @@ export async function refineScores(params: {
       setTimeout(() => {
         _lastDebugInfo += ', TIMED_OUT';
         resolve(null);
-      }, 10000);
+      }, 25000);
     });
 
     const refinementPromise = (async () => {
