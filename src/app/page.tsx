@@ -288,6 +288,13 @@ export default function TrendLensDashboard() {
                           <Button size="sm" variant="outline" onClick={() => submitFeedback('score', 'thumbs_up')}>👍 Helpful</Button>
                           <Button size="sm" variant="outline" onClick={() => submitFeedback('score', 'thumbs_down')}>👎 Not helpful</Button>
                         </div>
+                        {/* Contextual Insight */}
+                        {evaluation.captionInsight && (
+                          <div className="mt-3 p-3 bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 rounded-lg">
+                            <p className="text-xs font-semibold text-sky-700 dark:text-sky-400 mb-1">Contextual Insight</p>
+                            <p className="text-sm text-sky-900 dark:text-sky-100">{evaluation.captionInsight}</p>
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
 

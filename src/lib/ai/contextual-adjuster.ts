@@ -1,19 +1,16 @@
 /**
  * TrendLens AI v6.0 — Contextual Semantic Score Adjustment
  * Performs deep feature analysis and neural score refinement for poster evaluations.
- * Uses contextual semantic adjustment to produce dynamically refined scores
- * that account for nuanced inter-feature relationships beyond heuristic computation.
+ * Uses contextual semantic adjustment to produce dynamically refined scores,
+ * improvement suggestions, and insights that account for nuanced inter-feature
+ * relationships beyond heuristic computation.
+ * Falls back gracefully if the service is unavailable.
  */
 
 import ZAI from 'z-ai-web-dev-sdk';
 
-// Global debug string for diagnosing issues in production
 export let _lastDebugInfo = '';
 
-/**
- * Creates a ZAI instance using environment configuration when available,
- * falling back to the default config file lookup.
- */
 async function createZaiInstance(): Promise<InstanceType<typeof ZAI>> {
   const baseUrl = process.env.ZAI_BASE_URL;
   const apiKey = process.env.ZAI_API_KEY;
@@ -28,18 +25,20 @@ async function createZaiInstance(): Promise<InstanceType<typeof ZAI>> {
     return new ZAI(config as any);
   }
 
-  _lastDebugInfo += ', falling back to config file';
+  _lastDebugInfo += ', falling back to ZAI.create()';
   return ZAI.create();
 }
 
-/**
- * Refines heuristic evaluation scores using contextual semantic adjustment.
- * Analyzes poster data holistically through deep feature analysis to produce
- * neural score refinements that capture subtle quality signals.
- *
- * Returns null if the contextual adjustment service is unavailable,
- * allowing graceful fallback to heuristic scores.
- */
+export interface RefinedResult {
+  overallScore: number;
+  posterScore: number;
+  captionScore: number;
+  shapAdjustments: { feature: string; adjustedContribution: number }[];
+  captionInsight: string;
+  posterImprovements: string[];
+  captionImprovements: string[];
+}
+
 export async function refineScores(params: {
   caption: string;
   category: string;
@@ -48,13 +47,15 @@ export async function refineScores(params: {
   heuristicPoster: number;
   heuristicCaption: number;
   shapValues: { feature: string; value: number; contribution: number }[];
-}): Promise<{
-  overallScore: number;
-  posterScore: number;
-  captionScore: number;
-  shapAdjustments: { feature: string; adjustedContribution: number }[];
-  captionInsight: string;
-} | null> {
+  hasCta: boolean;
+  hasPrice: boolean;
+  hashtagCount: number;
+  wordCount: number;
+  emojiCount: number;
+  sentiment: string;
+  benchmarkSamples: number;
+  modelAuc: number;
+}): Promise<RefinedResult | null> {
   try {
     const zai = await createZaiInstance();
     _lastDebugInfo += ', zai instance created';
@@ -67,73 +68,90 @@ export async function refineScores(params: {
     });
 
     const refinementPromise = (async () => {
-      let response: any;
-      try {
-        // Try using fetch directly to diagnose DNS/connectivity issues
-        const baseUrl = process.env.ZAI_BASE_URL || '';
-        const apiKey = process.env.ZAI_API_KEY || '';
-        const chatId = process.env.ZAI_CHAT_ID || '';
-        const token = process.env.ZAI_TOKEN || '';
-        const userId = process.env.ZAI_USER_ID || '';
+      const baseUrl = process.env.ZAI_BASE_URL || '';
+      const apiKey = process.env.ZAI_API_KEY || '';
+      const chatId = process.env.ZAI_CHAT_ID || '';
+      const token = process.env.ZAI_TOKEN || '';
+      const userId = process.env.ZAI_USER_ID || '';
 
-        const fetchUrl = `${baseUrl}/chat/completions`;
-        const fetchHeaders: Record<string, string> = {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'X-Z-AI-From': 'Z',
-        };
-        if (chatId) fetchHeaders['X-Chat-Id'] = chatId;
-        if (userId) fetchHeaders['X-User-Id'] = userId;
-        if (token) fetchHeaders['X-Token'] = token;
+      const fetchUrl = `${baseUrl}/chat/completions`;
+      const fetchHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'X-Z-AI-From': 'Z',
+      };
+      if (chatId) fetchHeaders['X-Chat-Id'] = chatId;
+      if (userId) fetchHeaders['X-User-Id'] = userId;
+      if (token) fetchHeaders['X-Token'] = token;
 
-        const fetchBody = JSON.stringify({
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a social media poster evaluation assistant. Analyze the poster data and provide score adjustments as JSON. Return ONLY valid JSON with no markdown formatting, no code blocks, no explanation outside the JSON.',
-            },
-            {
-              role: 'user',
-              content: `Analyze this social media poster and provide refined scores.
+      const imageDesc = params.imageQuality
+        ? `Brightness: ${params.imageQuality.brightness}, Contrast: ${params.imageQuality.contrast}, Saturation: ${params.imageQuality.saturation}, Sharpness: ${params.imageQuality.blurScore}, Resolution: ${params.imageQuality.resolution.width}x${params.imageQuality.resolution.height}, Quality: ${params.imageQuality.qualityRating}`
+        : 'No image provided';
+
+      const shapDesc = params.shapValues.map(s => `${s.feature}(val=${s.value}, contrib=${s.contribution})`).join(', ');
+
+      const fetchBody = JSON.stringify({
+        messages: [
+          {
+            role: 'system',
+            content: `You are a social media poster evaluation assistant for Ugandan food businesses. Analyze the poster data and provide refined scores, specific improvement suggestions, and insights. Return ONLY valid JSON — no markdown, no code blocks, no explanation outside the JSON.`,
+          },
+          {
+            role: 'user',
+            content: `Analyze this social media poster and provide refined evaluation.
 
 Caption: "${params.caption}"
 Category: ${params.category}
-Image Quality: ${params.imageQuality ? `brightness=${params.imageQuality.brightness}, contrast=${params.imageQuality.contrast}, saturation=${params.imageQuality.saturation}, blurScore=${params.imageQuality.blurScore}, resolution=${params.imageQuality.resolution.width}x${params.imageQuality.resolution.height}, qualityRating=${params.imageQuality.qualityRating}` : 'No image provided'}
+Image Quality: ${imageDesc}
+Has CTA: ${params.hasCta ? 'YES' : 'NO'}
+Has Price: ${params.hasPrice ? 'YES' : 'NO'}
+Hashtag Count: ${params.hashtagCount}
+Word Count: ${params.wordCount}
+Emoji Count: ${params.emojiCount}
+Sentiment: ${params.sentiment}
+MongoDB Benchmark Samples: ${params.benchmarkSamples}
+Model AUC: ${params.modelAuc}
 Heuristic Scores — Overall: ${params.heuristicOverall}/10, Poster: ${params.heuristicPoster}/10, Caption: ${params.heuristicCaption}/10
-SHAP Values: ${params.shapValues.map(s => `${s.feature}(${s.value}, contrib=${s.contribution})`).join(', ')}
+SHAP Values: ${shapDesc}
 
-Return ONLY this JSON object (no markdown, no code fences):
-{ "overallScore": number, "posterScore": number, "captionScore": number, "shapAdjustments": [{ "feature": string, "adjustedContribution": number }], "captionInsight": string }
+Return ONLY this JSON (no markdown):
+{
+  "overallScore": <number 1-10 adjusted for THIS specific poster>,
+  "posterScore": <number 1-10>,
+  "captionScore": <number 1-10>,
+  "shapAdjustments": [{"feature": "<name from list>", "adjustedContribution": <number>}],
+  "captionInsight": "<1-2 sentence specific insight about THIS caption's strengths/weaknesses>",
+  "posterImprovements": [<2-4 specific, actionable improvement strings for THIS poster's image>],
+  "captionImprovements": [<2-4 specific, actionable improvement strings for THIS caption's text>]
+}
 
-Rules:
-- Scores must be between 1 and 10
-- Adjust heuristic scores based on contextual semantic analysis
-- captionInsight should be a concise 1-2 sentence insight about the caption quality
-- shapAdjustments should contain adjusted contributions for each feature`,
-            },
-          ],
-          thinking: { type: 'disabled' },
-        });
+CRITICAL RULES:
+- Scores MUST be different for different posters — a poster WITH CTA should score higher on CTA features than one WITHOUT
+- If hasCta is NO, mention the missing CTA in improvements. If YES, do NOT suggest adding a CTA
+- If hasPrice is NO, suggest adding price. If YES, do NOT suggest adding price
+- posterImprovements must be specific to THIS poster's image quality metrics (dark/bright/blurry/sharp/etc)
+- captionImprovements must be specific to THIS caption's actual content (too short, missing hashtags, etc)
+- A poster with CTA + price + many hashtags should score noticeably higher than one without
+- Use the actual image quality numbers to give specific suggestions (e.g. "brightness at 0.15 is too dark" not generic "improve lighting")`,
+          },
+        ],
+        thinking: { type: 'disabled' },
+      });
 
-        const fetchResponse = await fetch(fetchUrl, {
-          method: 'POST',
-          headers: fetchHeaders,
-          body: fetchBody,
-        });
+      const fetchResponse = await fetch(fetchUrl, {
+        method: 'POST',
+        headers: fetchHeaders,
+        body: fetchBody,
+      });
 
-        if (!fetchResponse.ok) {
-          const errorBody = await fetchResponse.text();
-          _lastDebugInfo += `, API HTTP error ${fetchResponse.status}: ${errorBody.substring(0, 200)}`;
-          return null;
-        }
-
-        response = await fetchResponse.json();
-        _lastDebugInfo += `, API call succeeded, response keys: ${Object.keys(response).join(',')}`;
-        _lastDebugInfo += `, response code: ${response.code}, msg: ${response.msg || 'none'}`;
-      } catch (apiErr: any) {
-        _lastDebugInfo += `, API call failed: ${apiErr?.message || String(apiErr)}, cause: ${apiErr?.cause?.message || 'none'}`;
+      if (!fetchResponse.ok) {
+        const errorBody = await fetchResponse.text();
+        _lastDebugInfo += `, API HTTP error ${fetchResponse.status}: ${errorBody.substring(0, 200)}`;
         return null;
       }
+
+      const response = await fetchResponse.json();
+      _lastDebugInfo += `, API call succeeded`;
 
       const content = response.choices?.[0]?.message?.content;
       if (!content) {
@@ -150,19 +168,13 @@ Rules:
       try {
         parsed = JSON.parse(cleaned);
       } catch (parseErr: any) {
-        _lastDebugInfo += `, JSON parse error: ${parseErr?.message || String(parseErr)}, raw: ${cleaned.substring(0, 150)}`;
+        _lastDebugInfo += `, JSON parse error: ${parseErr?.message}`;
         return null;
       }
 
-      // Validate the response structure
-      if (
-        typeof parsed.overallScore !== 'number' ||
-        typeof parsed.posterScore !== 'number' ||
-        typeof parsed.captionScore !== 'number' ||
-        !Array.isArray(parsed.shapAdjustments) ||
-        typeof parsed.captionInsight !== 'string'
-      ) {
-        _lastDebugInfo += `, invalid structure: keys=${Object.keys(parsed).join(',')}`;
+      // Validate required fields
+      if (typeof parsed.overallScore !== 'number' || typeof parsed.posterScore !== 'number' || typeof parsed.captionScore !== 'number') {
+        _lastDebugInfo += `, invalid score structure`;
         return null;
       }
 
@@ -171,13 +183,19 @@ Rules:
         overallScore: Math.max(1, Math.min(10, Math.round(parsed.overallScore * 10) / 10)),
         posterScore: Math.max(1, Math.min(10, Math.round(parsed.posterScore * 10) / 10)),
         captionScore: Math.max(1, Math.min(10, Math.round(parsed.captionScore * 10) / 10)),
-        shapAdjustments: parsed.shapAdjustments.map(
-          (a: { feature: string; adjustedContribution: number }) => ({
-            feature: String(a.feature),
-            adjustedContribution: Number(a.adjustedContribution),
-          })
-        ),
-        captionInsight: String(parsed.captionInsight),
+        shapAdjustments: Array.isArray(parsed.shapAdjustments)
+          ? parsed.shapAdjustments.map((a: any) => ({
+              feature: String(a.feature || ''),
+              adjustedContribution: Number(a.adjustedContribution || 0),
+            }))
+          : [],
+        captionInsight: String(parsed.captionInsight || '').slice(0, 300),
+        posterImprovements: Array.isArray(parsed.posterImprovements)
+          ? parsed.posterImprovements.map((s: any) => String(s)).slice(0, 6)
+          : [],
+        captionImprovements: Array.isArray(parsed.captionImprovements)
+          ? parsed.captionImprovements.map((s: any) => String(s)).slice(0, 6)
+          : [],
       };
     })();
 

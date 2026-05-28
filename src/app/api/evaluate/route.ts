@@ -80,6 +80,8 @@ export async function POST(request: NextRequest) {
     let adjustedCaptionScore = captionScoreValue;
     let captionInsight: string | undefined;
     let debugRefineError: string | undefined;
+    let llmPosterImprovements: string[] | undefined;
+    let llmCaptionImprovements: string[] | undefined;
     try {
       const refined = await refineScores({
         caption,
@@ -96,6 +98,14 @@ export async function POST(request: NextRequest) {
         heuristicPoster: posterScore,
         heuristicCaption: captionScoreValue,
         shapValues: shapValues.map(s => ({ feature: s.feature, value: s.value, contribution: s.contribution })),
+        hasCta: captionFeatures.hasCta,
+        hasPrice: captionFeatures.hasPrice,
+        hashtagCount: captionFeatures.hashtagCount,
+        wordCount: captionFeatures.wordCount,
+        emojiCount: captionFeatures.emojiCount,
+        sentiment: captionFeatures.sentiment.polarity > 0.2 ? 'positive' : captionFeatures.sentiment.polarity < -0.2 ? 'negative' : 'neutral',
+        benchmarkSamples: benchmarks.categorySamples,
+        modelAuc: benchmarks.modelAuc,
       });
       if (refined) {
         // Blend contextual refinement with heuristic scores (60/40 weighting)
@@ -110,6 +120,14 @@ export async function POST(request: NextRequest) {
           if (shapItem) {
             shapItem.contribution = Math.round((shapItem.contribution * 0.4 + adj.adjustedContribution * 0.6) * 1000) / 1000;
           }
+        }
+
+        // Use contextual improvements if provided (they're poster-specific)
+        if (refined.posterImprovements && refined.posterImprovements.length > 0) {
+          llmPosterImprovements = refined.posterImprovements;
+        }
+        if (refined.captionImprovements && refined.captionImprovements.length > 0) {
+          llmCaptionImprovements = refined.captionImprovements;
         }
       } else {
         debugRefineError = `refineScores returned null. Debug: ${_lastDebugInfo}`;
@@ -141,9 +159,13 @@ export async function POST(request: NextRequest) {
     // 8. Generate platform variants
     const captionVariants = generatePlatformVariants(improvedCaption, captionFeatures, category);
 
-    // 9. Generate improvements
-    const posterImprovements = generatePosterImprovements(captionFeatures, benchmarks, imageQuality);
-    const captionImprovements = generateCaptionImprovements(captionFeatures, category, benchmarks);
+    // 9. Generate improvements — use contextual improvements if available, otherwise heuristic
+    const posterImprovements = llmPosterImprovements && llmPosterImprovements.length > 0
+      ? llmPosterImprovements
+      : generatePosterImprovements(captionFeatures, benchmarks, imageQuality);
+    const captionImprovements = llmCaptionImprovements && llmCaptionImprovements.length > 0
+      ? llmCaptionImprovements
+      : generateCaptionImprovements(captionFeatures, category, benchmarks);
 
     // 10. Generate annotations (now with image-based annotations)
     const annotations = generateAnnotations(captionFeatures, rawScore, imageQuality);
