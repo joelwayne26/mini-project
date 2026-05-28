@@ -8,6 +8,27 @@
 import ZAI from 'z-ai-web-dev-sdk';
 
 /**
+ * Creates a ZAI instance using environment configuration when available,
+ * falling back to the default config file lookup.
+ */
+async function createZaiInstance(): Promise<InstanceType<typeof ZAI>> {
+  const baseUrl = process.env.ZAI_BASE_URL;
+  const apiKey = process.env.ZAI_API_KEY;
+
+  if (baseUrl && apiKey) {
+    return new ZAI({
+      baseUrl,
+      apiKey,
+      chatId: process.env.ZAI_CHAT_ID,
+      userId: process.env.ZAI_USER_ID,
+      token: process.env.ZAI_TOKEN,
+    } as any);
+  }
+
+  return ZAI.create();
+}
+
+/**
  * Refines heuristic evaluation scores using contextual semantic adjustment.
  * Analyzes poster data holistically through deep feature analysis to produce
  * neural score refinements that capture subtle quality signals.
@@ -31,7 +52,7 @@ export async function refineScores(params: {
   captionInsight: string;
 } | null> {
   try {
-    const zai = await ZAI.create();
+    const zai = await createZaiInstance();
 
     const timeoutPromise = new Promise<null>((resolve) => {
       setTimeout(() => resolve(null), 10000);
