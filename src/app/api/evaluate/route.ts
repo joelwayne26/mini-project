@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { extractCaptionFeatures, buildFeatureVector } from '@/lib/ai/feature-extractor';
-import { heuristicScore, scoreTo1to10, adjustScoreWithBenchmarks, computeConfidenceInterval, computePosterScore, computeCaptionScore } from '@/lib/ai/scoring-engine';
+import { heuristicScore, mlEnhancedScore, scoreTo1to10, adjustScoreWithBenchmarks, computeConfidenceInterval, computePosterScore, computeCaptionScore } from '@/lib/ai/scoring-engine';
 import { computeShapValues, getFeatureImportanceSummary } from '@/lib/ai/shap-explainer';
 import { generateImprovedCaption, generatePlatformVariants } from '@/lib/ai/caption-generator';
 import { searchSimilarPosts, generateRagInsights } from '@/lib/ai/rag-engine';
@@ -60,8 +60,9 @@ export async function POST(request: NextRequest) {
     // 3. Fetch MongoDB benchmarks
     const benchmarks = await fetchBenchmarks(category);
 
-    // 4. Compute scores (now using real image quality)
-    const rawScore = heuristicScore(captionFeatures, imageQuality);
+    // 4. Compute scores — try ML-enhanced scoring first, fall back to heuristic
+    const mlResult = await mlEnhancedScore(captionFeatures, imageQuality, featureVector);
+    const rawScore = mlResult.modelUsed ? mlResult.score : heuristicScore(captionFeatures, imageQuality);
     const overall10 = scoreTo1to10(rawScore);
     const adjustedOverall_raw = benchmarks.dbConnected && benchmarks.categorySamples >= 5
       ? adjustScoreWithBenchmarks(overall10, captionFeatures, benchmarks)
@@ -215,12 +216,17 @@ export async function POST(request: NextRequest) {
     // 10. Generate annotations (now with image-based annotations and visual analysis)
     const annotations = generateAnnotations(captionFeatures, rawScore, imageQuality, visualAnalysis);
 
-    // 11. Get model version
+    // 11. Get model version (prefer logistic_regression, fall back to xgboost)
     let modelVersion = 'heuristic';
     try {
       const modelRepo = new ModelRegistryRepository();
-      const latest = await modelRepo.getLatest('xgboost');
-      if (latest) modelVersion = (latest.version as string) || 'unknown';
+      const lrModel = await modelRepo.getLatest('logistic_regression');
+      if (lrModel) {
+        modelVersion = (lrModel.version as string) || 'unknown';
+      } else {
+        const xgbModel = await modelRepo.getLatest('xgboost');
+        if (xgbModel) modelVersion = (xgbModel.version as string) || 'unknown';
+      }
     } catch { /* ignore */ }
 
     // 12. Store evaluation (with image quality data)
@@ -379,14 +385,20 @@ async function fetchBenchmarks(category: string): Promise<BenchmarkData> {
       ? (priceEr.reduce((s, r) => s + r, 0) / priceEr.length) - (noPriceEr.reduce((s, r) => s + r, 0) / noPriceEr.length)
       : 0;
 
-    // Model info
+    // Model info (prefer logistic_regression, fall back to xgboost)
     let modelVersion = 'none', modelAuc = 0;
     try {
       const modelRepo = new ModelRegistryRepository();
-      const latest = await modelRepo.getLatest('xgboost');
-      if (latest) {
-        modelVersion = (latest.version as string) || 'unknown';
-        modelAuc = (latest.auc as number) || 0;
+      const lrModel = await modelRepo.getLatest('logistic_regression');
+      if (lrModel) {
+        modelVersion = (lrModel.version as string) || 'unknown';
+        modelAuc = (lrModel.auc as number) || 0;
+      } else {
+        const xgbModel = await modelRepo.getLatest('xgboost');
+        if (xgbModel) {
+          modelVersion = (xgbModel.version as string) || 'unknown';
+          modelAuc = (xgbModel.auc as number) || 0;
+        }
       }
     } catch { /* ignore */ }
 
