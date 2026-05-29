@@ -1,12 +1,14 @@
 /**
- * TrendLens AI v6.0 — RAG Engine (Enhanced Semantic Edition)
+ * TrendLens AI v6.0 — RAG Engine (Semantic Vector Edition)
  * Retrieval-Augmented Generation using MongoDB Atlas Vector Search.
  * 
  * Key improvements over v1:
- * - N-gram + semantic vocabulary embeddings (not just unigram hashing)
- * - Silent LLM embedding generation for richer semantic representation
- * - Graceful fallback: LLM embedding → enhanced TF → text-based search
+ * - In-memory cosine similarity search as automatic fallback when Atlas Vector Search
+ *   index is not configured (solves Weakness 4: no manual Atlas index setup required)
+ * - Silent LLM embedding enhancement for richer semantic representation (solves Weakness 2)
+ * - Three-tier search: Atlas Vector → In-memory cosine → Text-based regex
  * - Category-aware similarity weighting
+ * - Embedding cache to avoid recomputation
  */
 
 import { EmbeddingsRepository, healthCheck, getCollection } from '../db/client';
@@ -36,6 +38,26 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   general: ['uganda', 'kampala', 'local', 'business', 'market', 'deal', 'offer', 'quality', 'support'],
 };
 
+// ─── Embedding Cache ────────────────────────────────────────────────────────
+
+const embeddingCache = new Map<string, number[]>();
+const EMBEDDING_CACHE_MAX = 500;
+
+function getCachedEmbedding(text: string): number[] | null {
+  const key = text.trim().toLowerCase().slice(0, 200);
+  return embeddingCache.get(key) || null;
+}
+
+function setCachedEmbedding(text: string, embedding: number[]): void {
+  const key = text.trim().toLowerCase().slice(0, 200);
+  if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
+    // Evict oldest entry
+    const firstKey = embeddingCache.keys().next().value;
+    if (firstKey) embeddingCache.delete(firstKey);
+  }
+  embeddingCache.set(key, embedding);
+}
+
 // ─── Enhanced Embedding Generation ──────────────────────────────────────────
 
 export function generateEnhancedEmbedding(text: string, dimensions: number = 384): number[] {
@@ -45,7 +67,7 @@ export function generateEnhancedEmbedding(text: string, dimensions: number = 384
   const words = lower.split(/\s+/).filter(w => w.length > 1);
   const embedding = new Array(dimensions).fill(0);
 
-  // 1. Unigram features with position diversity
+  // 1. Unigram features with position diversity (3 hashes per word for better coverage)
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
     for (let j = 0; j < 3; j++) {
@@ -132,6 +154,104 @@ function multiHash(str: string): number {
   return Math.abs(hash);
 }
 
+// ─── In-Memory Cosine Similarity Search ─────────────────────────────────────
+// This solves Weakness 4: No need for Atlas Vector Search index setup.
+// Pre-loads embeddings from MongoDB and computes cosine similarity in JS.
+
+interface CachedEmbeddingDoc {
+  _id: string;
+  caption: string;
+  category: string;
+  engagement_rate: number;
+  hashtags: string[];
+  has_cta: boolean;
+  has_price: boolean;
+  embedding: number[];
+}
+
+let embeddingDocCache: CachedEmbeddingDoc[] = [];
+let embeddingCacheTime = 0;
+const EMBEDDING_DOC_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
+}
+
+async function loadEmbeddingDocs(): Promise<CachedEmbeddingDoc[]> {
+  if (embeddingDocCache.length > 0 && Date.now() - embeddingCacheTime < EMBEDDING_DOC_CACHE_TTL) {
+    return embeddingDocCache;
+  }
+
+  try {
+    const dbConnected = await healthCheck();
+    if (!dbConnected) return [];
+
+    const collection = await getCollection('embeddings');
+    const docs = await collection.find({}).sort({ engagement_rate: -1 }).limit(200).toArray();
+
+    embeddingDocCache = docs.map(d => ({
+      _id: d._id?.toString() || '',
+      caption: (d.caption as string) || '',
+      category: (d.category as string) || '',
+      engagement_rate: (d.engagement_rate as number) || 0,
+      hashtags: (d.hashtags as string[]) || [],
+      has_cta: (d.has_cta as boolean) || false,
+      has_price: (d.has_price as boolean) || false,
+      embedding: Array.isArray(d.embedding) ? (d.embedding as number[]) : [],
+    })).filter(d => d.embedding.length === 384);
+
+    embeddingCacheTime = Date.now();
+    return embeddingDocCache;
+  } catch {
+    return [];
+  }
+}
+
+async function inMemoryVectorSearch(
+  queryEmbedding: number[],
+  category: string,
+  limit: number,
+): Promise<VectorSearchResult[]> {
+  const docs = await loadEmbeddingDocs();
+  if (docs.length === 0) return [];
+
+  // Filter by category if specified
+  const filtered = category
+    ? docs.filter(d => d.category === category)
+    : docs;
+
+  if (filtered.length === 0) return [];
+
+  // Compute cosine similarity for each doc
+  const scored = filtered.map(doc => ({
+    doc,
+    similarity: cosineSimilarity(queryEmbedding, doc.embedding),
+  }));
+
+  // Sort by similarity descending
+  scored.sort((a, b) => b.similarity - a.similarity);
+
+  // Return top results
+  return scored.slice(0, limit).map(({ doc, similarity }) => ({
+    _id: doc._id,
+    caption: doc.caption,
+    engagementRate: doc.engagement_rate,
+    category: doc.category,
+    score: Math.round(similarity * 10000) / 10000,
+    hashtags: doc.hashtags,
+    hasCta: doc.has_cta,
+    hasPrice: doc.has_price,
+  }));
+}
+
 // ─── Silent LLM Embedding Enhancement ──────────────────────────────────────
 
 /**
@@ -144,6 +264,10 @@ async function generateLLMEnhancedEmbedding(
   category: string,
   dimensions: number = 384,
 ): Promise<number[]> {
+  // Check cache first
+  const cached = getCachedEmbedding(text);
+  if (cached) return cached;
+
   const baseEmbedding = generateEnhancedEmbedding(text, dimensions);
 
   try {
@@ -166,7 +290,10 @@ async function generateLLMEnhancedEmbedding(
     });
 
     const content = response.choices?.[0]?.message?.content;
-    if (!content) return baseEmbedding;
+    if (!content) {
+      setCachedEmbedding(text, baseEmbedding);
+      return baseEmbedding;
+    }
 
     // Parse LLM-generated keywords and blend into embedding
     const llmKeywords = content.toLowerCase().split(',').map(k => k.trim()).filter(k => k.length > 2);
@@ -175,9 +302,16 @@ async function generateLLMEnhancedEmbedding(
     const llmEmbedding = new Array(dimensions).fill(0);
     for (const keyword of llmKeywords) {
       const words = keyword.split(/\s+/);
+      // Unigram
       for (const word of words) {
         const hash = multiHash(word) % (dimensions - 20);
         llmEmbedding[hash] += 1.5;
+      }
+      // Bigram for multi-word keywords
+      if (words.length > 1) {
+        const bigram = words.join('_');
+        const hash = multiHash(bigram) % (dimensions - 20);
+        llmEmbedding[hash] += 1.0;
       }
     }
 
@@ -187,20 +321,24 @@ async function generateLLMEnhancedEmbedding(
       llmEmbedding[i] /= llmNorm;
     }
 
-    // Blend: 70% TF + 30% LLM (LLM adds semantic richness without dominating)
-    const blended = baseEmbedding.map((v, i) => v * 0.7 + llmEmbedding[i] * 0.3);
+    // Blend: 65% TF + 35% LLM (LLM adds semantic richness without dominating)
+    const blended = baseEmbedding.map((v, i) => v * 0.65 + llmEmbedding[i] * 0.35);
 
     // Re-normalize
     const blendNorm = Math.sqrt(blended.reduce((s, v) => s + v * v, 0)) || 1;
-    return blended.map(v => Number((v / blendNorm).toFixed(6)));
+    const result = blended.map(v => Number((v / blendNorm).toFixed(6)));
+
+    setCachedEmbedding(text, result);
+    return result;
 
   } catch {
     // LLM unavailable — use enhanced TF embedding
+    setCachedEmbedding(text, baseEmbedding);
     return baseEmbedding;
   }
 }
 
-// ─── RAG Search ────────────────────────────────────────────────────────────
+// ─── RAG Search (Three-Tier) ───────────────────────────────────────────────
 
 export async function searchSimilarPosts(
   caption: string,
@@ -208,18 +346,32 @@ export async function searchSimilarPosts(
   limit: number = 5,
 ): Promise<VectorSearchResult[]> {
   try {
-    // Try LLM-enhanced embedding first, fall back to enhanced TF
+    // Generate embedding (try LLM-enhanced first, fall back to enhanced TF)
     const embedding = await generateLLMEnhancedEmbedding(caption, category);
-    const repo = new EmbeddingsRepository();
 
+    // Tier 1: Try Atlas Vector Search
     try {
+      const repo = new EmbeddingsRepository();
       const results = await repo.vectorSearch(embedding, limit, { category });
-      return results as VectorSearchResult[];
+      if (results && results.length > 0) {
+        return results as VectorSearchResult[];
+      }
     } catch {
-      // Vector search might not be available (no index created yet)
-      // Fallback to enhanced text-based search
-      return await enhancedTextSearch(caption, category, limit);
+      // Atlas Vector Search not available (no index created)
     }
+
+    // Tier 2: In-memory cosine similarity search (automatic fallback, no Atlas index needed)
+    try {
+      const results = await inMemoryVectorSearch(embedding, category, limit);
+      if (results.length > 0) {
+        return results;
+      }
+    } catch {
+      // In-memory search failed
+    }
+
+    // Tier 3: Text-based regex search (last resort)
+    return await enhancedTextSearch(caption, category, limit);
   } catch {
     return [];
   }
@@ -227,7 +379,7 @@ export async function searchSimilarPosts(
 
 /**
  * Enhanced text-based search using MongoDB text search + keyword matching.
- * This is the fallback when Atlas Vector Search isn't configured.
+ * This is the fallback when Atlas Vector Search and in-memory search both fail.
  */
 async function enhancedTextSearch(
   caption: string,
@@ -292,7 +444,7 @@ export function generateRagInsights(
     if (post.hashtags.length >= rules.idealHashtags && captionFeatures.hashtagCount < rules.idealHashtags) {
       patterns.push(`Uses ${post.hashtags.length}+ hashtags`);
     }
-    if (post.engagementRate > 0.7) {
+    if (post.engagementRate > 0.07) {
       patterns.push('High engagement rate');
     }
 
@@ -340,6 +492,10 @@ export async function storePostEmbedding(
       has_cta: hasCta,
       has_price: hasPrice,
     });
+
+    // Invalidate in-memory cache so new embeddings are picked up
+    embeddingDocCache = [];
+    embeddingCacheTime = 0;
   } catch {
     // Non-critical — don't fail the evaluation
   }

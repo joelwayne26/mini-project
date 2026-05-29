@@ -1,7 +1,9 @@
 """
 trendlens/rag_engine.py
-RAG engine using MongoDB data and TF-IDF similarity.
-No external LLM APIs.
+RAG engine using MongoDB data with three-tier search:
+1. Atlas Vector Search (if index configured)
+2. In-memory cosine similarity (automatic fallback)
+3. TF-IDF text search (last resort)
 """
 
 import logging
@@ -38,8 +40,25 @@ def cosine_similarity_tfidf(vec1: Dict[str, float], vec2: Dict[str, float]) -> f
     return dot / (norm1 * norm2)
 
 
+def cosine_similarity_vectors(a: List[float], b: List[float]) -> float:
+    """Compute cosine similarity between two numeric vectors."""
+    if len(a) != len(b) or len(a) == 0:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 class RAGEngine:
     """RAG engine that retrieves similar high-performing posts from MongoDB."""
+
+    # In-memory embedding cache for cosine similarity fallback
+    _embedding_cache: List[Dict[str, Any]] = []
+    _cache_time: float = 0
+    _cache_ttl: float = 300.0  # 5 minutes
 
     def find_similar_posts(
         self,
@@ -58,7 +77,7 @@ class RAGEngine:
             return self._fallback_search(caption, category, top_k)
 
     def _mongodb_search(self, caption: str, category: str, limit: int) -> List[Dict[str, Any]]:
-        """Search MongoDB for similar posts."""
+        """Search MongoDB for similar posts using three-tier approach."""
         from trendlens.database import (
             DatabaseManager,
             GroundTruthRepository,
@@ -71,7 +90,7 @@ class RAGEngine:
         if not db_mgr.health_check():
             return self._fallback_search(caption, category, limit)
 
-        # Try vector search on embeddings collection
+        # Tier 1: Try vector search on embeddings collection
         try:
             emb_repo = EmbeddingsRepository()
             query_embedding = self._caption_to_embedding(caption)
@@ -97,7 +116,15 @@ class RAGEngine:
         except Exception:
             pass
 
-        # Fallback: TF-IDF similarity
+        # Tier 2: In-memory cosine similarity search
+        try:
+            results = self._in_memory_vector_search(caption, category, limit)
+            if results:
+                return results
+        except Exception:
+            pass
+
+        # Tier 3: TF-IDF similarity fallback
         gt_repo = GroundTruthRepository()
         query: Dict[str, Any] = {}
         if category:
@@ -135,6 +162,76 @@ class RAGEngine:
                 })
         return results
 
+    def _in_memory_vector_search(
+        self, caption: str, category: str, limit: int
+    ) -> List[Dict[str, Any]]:
+        """In-memory cosine similarity search (no Atlas Vector Search index needed)."""
+        import time
+        from trendlens.database import DatabaseManager
+
+        # Check cache
+        now = time.time()
+        if not self._embedding_cache or (now - self._cache_time) > self._cache_ttl:
+            try:
+                db_mgr = DatabaseManager()
+                if not db_mgr.health_check():
+                    return []
+
+                db = db_mgr.get_database()
+                collection = db["embeddings"]
+                docs = list(collection.find().sort("engagement_rate", -1).limit(200))
+
+                self._embedding_cache = []
+                for doc in docs:
+                    emb = doc.get("embedding", [])
+                    if isinstance(emb, list) and len(emb) == 384:
+                        self._embedding_cache.append(doc)
+                self._cache_time = now
+            except Exception:
+                return []
+
+        if not self._embedding_cache:
+            return []
+
+        # Filter by category if specified
+        filtered = (
+            [d for d in self._embedding_cache if d.get("category") == category]
+            if category
+            else self._embedding_cache
+        )
+
+        if not filtered:
+            return []
+
+        # Compute query embedding
+        query_embedding = self._caption_to_embedding(caption)
+
+        # Compute cosine similarity for each doc
+        scored = []
+        for doc in filtered:
+            doc_embedding = doc.get("embedding", [])
+            if len(doc_embedding) == 384:
+                sim = cosine_similarity_vectors(query_embedding, doc_embedding)
+                scored.append((sim, doc))
+
+        # Sort by similarity descending
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        return [
+            {
+                "caption": doc.get("caption", ""),
+                "engagement_rate": doc.get("engagement_rate", 0),
+                "category": doc.get("category", ""),
+                "hashtags": doc.get("hashtags", []),
+                "has_cta": doc.get("has_cta", False),
+                "has_price": doc.get("has_price", False),
+                "similarity_score": round(sim, 4),
+                "source": "in_memory_cosine",
+            }
+            for sim, doc in scored[:limit]
+            if sim > 0.01
+        ]
+
     def _fallback_search(self, caption: str, category: str, limit: int) -> List[Dict[str, Any]]:
         """Fallback heuristic examples when MongoDB is unavailable."""
         examples = {
@@ -156,19 +253,39 @@ class RAGEngine:
         return examples.get(cat, [])[:limit]
 
     def _caption_to_embedding(self, caption: str) -> List[float]:
-        """Generate 384-dim embedding from caption text."""
+        """Generate 384-dim embedding from caption text with n-gram features."""
         dim = 384
         words = re.findall(r'[a-z]{3,}', caption.lower())
         embedding = [0.0] * dim
-        for word in words:
+
+        # Unigram features with position diversity
+        for i, word in enumerate(words):
             hash_val = 0
             for ch in word:
                 hash_val = ((hash_val << 5) - hash_val + ord(ch)) | 0
-            idx = abs(hash_val) % dim
-            embedding[idx] += 1
+            idx = abs(hash_val) % (dim - 20)
+            embedding[idx] += 1.0
+            # Second hash for diversity
+            hash_val2 = ((hash_val >> 3) ^ (i * 31)) | 0
+            idx2 = abs(hash_val2) % (dim - 20)
+            embedding[idx2] += 0.5
+
+        # Bigram features
+        for i in range(len(words) - 1):
+            bigram = f"{words[i]}_{words[i+1]}"
+            hash_val = 0
+            for ch in bigram:
+                hash_val = ((hash_val << 5) - hash_val + ord(ch)) | 0
+            idx = abs(hash_val) % (dim - 20)
+            embedding[idx] += 0.7
+
+        # Structural features
         embedding[dim - 1] = len(words) / 50
         embedding[dim - 2] = len(re.findall(r'#', caption)) / 15
         embedding[dim - 3] = 1.0 if re.search(r'ugx|ush|\$', caption, re.I) else 0.0
         embedding[dim - 4] = 1.0 if re.search(r'dm|whatsapp|link in bio|order', caption, re.I) else 0.0
+        embedding[dim - 5] = len(re.findall(r'[.!?]', caption)) / 5
+        embedding[dim - 6] = 1.0 if re.search(r'0700|0772|0312|0780', caption) else 0.0
+
         norm = math.sqrt(sum(v * v for v in embedding)) or 1
         return [round(v / norm, 6) for v in embedding]
