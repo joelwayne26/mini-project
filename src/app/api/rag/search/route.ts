@@ -15,13 +15,26 @@ export async function GET(request: NextRequest) {
 
   try {
     const similarPosts = await searchSimilarPosts(caption, category, limit);
+
+    // Normalize results to always have camelCase field names
+    const normalizedResults = similarPosts.map(post => ({
+      _id: post._id,
+      caption: post.caption,
+      engagementRate: (post as any).engagementRate ?? (post as any).engagement_rate ?? 0,
+      category: post.category,
+      score: post.score,
+      hashtags: post.hashtags || [],
+      hasCta: (post as any).hasCta ?? (post as any).has_cta ?? false,
+      hasPrice: (post as any).hasPrice ?? (post as any).has_price ?? false,
+    }));
+
     const captionFeatures = extractCaptionFeatures(caption, category);
     const insights = generateRagInsights(similarPosts, captionFeatures, category);
 
     return NextResponse.json({
       query: caption,
       category,
-      results: similarPosts,
+      results: normalizedResults,
       insights,
     });
   } catch (error) {

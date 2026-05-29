@@ -435,30 +435,36 @@ export function generateRagInsights(
     const patterns: string[] = [];
     const rules = getCategoryRule(category);
 
-    if (post.hasCta && !captionFeatures.hasCta) {
+    // Handle both camelCase and snake_case field names (from different search backends)
+    const er = (post as any).engagementRate ?? (post as any).engagement_rate ?? 0;
+    const hasCta = (post as any).hasCta ?? (post as any).has_cta ?? false;
+    const hasPrice = (post as any).hasPrice ?? (post as any).has_price ?? false;
+    const hashtags = post.hashtags || [];
+
+    if (hasCta && !captionFeatures.hasCta) {
       patterns.push('Uses a call-to-action');
     }
-    if (post.hasPrice && !captionFeatures.hasPrice) {
+    if (hasPrice && !captionFeatures.hasPrice) {
       patterns.push('Includes pricing info');
     }
-    if (post.hashtags.length >= rules.idealHashtags && captionFeatures.hashtagCount < rules.idealHashtags) {
-      patterns.push(`Uses ${post.hashtags.length}+ hashtags`);
+    if (hashtags.length >= rules.idealHashtags && captionFeatures.hashtagCount < rules.idealHashtags) {
+      patterns.push(`Uses ${hashtags.length}+ hashtags`);
     }
-    if (post.engagementRate > 0.07) {
+    if (er > 0.07) {
       patterns.push('High engagement rate');
     }
 
     let takeaway = '';
     if (patterns.length > 0) {
-      takeaway = `This similar post ${patterns.slice(0, 2).join(' and ')}, achieving ${Math.round(post.engagementRate * 100)}% engagement.`;
+      takeaway = `This similar post ${patterns.slice(0, 2).join(' and ')}, achieving ${Math.round(er * 100)}% engagement.`;
     } else {
-      takeaway = `This ${category} post achieved ${Math.round(post.engagementRate * 100)}% engagement.`;
+      takeaway = `This ${category} post achieved ${Math.round(er * 100)}% engagement.`;
     }
 
     return {
       postId: post._id,
       caption: post.caption.slice(0, 200) + (post.caption.length > 200 ? '...' : ''),
-      engagementRate: post.engagementRate,
+      engagementRate: er,
       category: post.category,
       similarity: post.score,
       keyPatterns: patterns,
